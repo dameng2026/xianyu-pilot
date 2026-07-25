@@ -6,7 +6,47 @@
         <StatCard title="总记录数" :value="total" change="服务端总数" icon="record" />
         <StatCard title="成功数" :value="successCount" change="本页统计" icon="shield" color="green" />
         <StatCard title="失败数" :value="failedCount" change="本页统计" icon="warning" color="red" />
-        <StatCard title="重试中数" :value="retryingCount" change="本页统计" icon="refresh" color="orange" />
+        <StatCard title="处理中数" :value="retryingCount" change="本页统计" icon="refresh" color="orange" />
+      </div>
+      <!-- 滑块求解规则说明：统计卡片下方常驻展示 -->
+      <div class="rules-card">
+        <div class="rules-head">
+          <span class="rules-title">滑块求解规则说明</span>
+          <span class="rules-sub">了解求解机制，便于判断预期</span>
+        </div>
+        <div class="rules-callout">
+          <span class="rules-badge badge-blue">i</span>
+          <div>
+            <strong>预检测与能力范围</strong>
+            <span>每次求解前预检 Cookie 有效性，失效则不予求解。本功能主要解决 WS 掉线引起的滑块问题；Cookie 失效表示登录态已被闲鱼拒绝，需重新扫码登录或更新 Cookie。</span>
+          </div>
+        </div>
+        <div class="rules-grid">
+          <div class="rule-item">
+            <span class="rules-dot dot-blue"></span>
+            <span><strong>求解方式</strong>：默认使用本地开源版滑块求解（能力较弱）；可在「API 对接」页面开启远程滑块求解服务以提升通过率（80%+）。</span>
+          </div>
+          <div class="rule-item">
+            <span class="rules-dot dot-orange"></span>
+            <span><strong>手动优先</strong>：手动触发求解优先于自动触发求解。</span>
+          </div>
+          <div class="rule-item">
+            <span class="rules-dot dot-green"></span>
+            <span><strong>Cookie 合并</strong>：求解成功后会自动合并浏览器新写入的风控 Cookie 字段（cna/isg/x5sec 等）到数据库。</span>
+          </div>
+          <div class="rule-item">
+            <span class="rules-dot dot-red"></span>
+            <span><strong>失败冷却</strong>：求解失败会触发指数退避冷却，期间拒绝自动求解，避免 punish 加码。</span>
+          </div>
+          <div class="rule-item">
+            <span class="rules-dot dot-purple"></span>
+            <span><strong>触发场景</strong>：支持手动触发、手动重试、WS 连接、Cookie 保活、Token 刷新五种场景。</span>
+          </div>
+          <div class="rule-item">
+            <span class="rules-dot dot-gray"></span>
+            <span><strong>求解耗时</strong>：单次约需 30～120 秒，受网络与风控策略影响。</span>
+          </div>
+        </div>
       </div>
       <CardPanel title="滑块求解记录" desc="点击表格行查看完整详情">
         <div class="toolbar">
@@ -14,7 +54,7 @@
             <option value="">全部状态</option>
             <option value="success">成功</option>
             <option value="fail">失败</option>
-            <option value="retrying">重试中</option>
+            <option value="retrying">处理中</option>
           </select>
           <select v-model="filters.triggerScene" class="input" @change="search">
             <option value="">全部触发场景</option>
@@ -36,7 +76,7 @@
           <template #failed="{row}">
             <Badge v-if="row.status === 'fail'" type="red">失败</Badge>
             <Badge v-else-if="row.status === 'success'" type="green">成功</Badge>
-            <Badge v-else type="orange">重试中</Badge>
+            <Badge v-else type="orange">处理中</Badge>
           </template>
           <template #failReason="{row}">
             <span v-if="row.status === 'fail' && row.errorMessage" :title="row.errorMessage" class="cell-truncate fail-text">{{ row.errorMessage }}</span>
@@ -62,7 +102,7 @@
           <div class="metric-tile"><span>是否失败</span>
             <Badge v-if="detail.status === 'fail'" type="red">失败</Badge>
             <Badge v-else-if="detail.status === 'success'" type="green">成功</Badge>
-            <Badge v-else type="orange">重试中</Badge>
+            <Badge v-else type="orange">处理中</Badge>
           </div>
           <div class="metric-tile"><span>处理结果</span><Badge :type="resultBadge(detail.result)">{{ resultText(detail.result) }}</Badge></div>
           <div class="metric-tile"><span>验证引擎</span><b :title="detail.engine">{{ detail.engine || '-' }}</b></div>
@@ -148,7 +188,7 @@ function resultBadge(result) {
 function statusText(status) {
   if (status === 'success') return '成功'
   if (status === 'fail') return '失败'
-  if (status === 'retrying') return '重试中'
+  if (status === 'retrying') return '处理中'
   return status || '-'
 }
 function statusBadge(status) {
@@ -336,5 +376,133 @@ onUnmounted(() => {
   line-height: 1.6;
   color: #526079;
   font-family: inherit;
+}
+.rules-card {
+  padding: 16px 18px;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  margin: 4px 0 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.rules-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed #e2e8f0;
+}
+.rules-head::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: linear-gradient(180deg, #3b82f6, #6366f1);
+  border-radius: 2px;
+}
+.rules-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+  letter-spacing: 0.3px;
+}
+.rules-sub {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-left: auto;
+}
+.rules-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #eff6ff 0%, #e0f2fe 100%);
+  border: 1px solid #bfdbfe;
+  border-left: 3px solid #3b82f6;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  transition: box-shadow 0.2s;
+}
+.rules-callout:hover {
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.12);
+}
+.rules-callout strong {
+  display: block;
+  font-size: 13px;
+  color: #1e40af;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.rules-callout span {
+  font-size: 12.5px;
+  color: #475569;
+  line-height: 1.6;
+}
+.rules-badge {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  font-style: italic;
+  color: #fff;
+  margin-top: 1px;
+  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3);
+}
+.badge-blue { background: linear-gradient(135deg, #3b82f6, #6366f1); }
+.rules-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 22px;
+}
+.rule-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: #475569;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.rule-item:hover {
+  background: rgba(255, 255, 255, 0.6);
+}
+.rule-item strong {
+  color: #1e293b;
+  font-weight: 600;
+}
+.rules-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 7px;
+  position: relative;
+}
+.rules-dot::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: inherit;
+  opacity: 0.18;
+  z-index: -1;
+}
+.dot-red { background: #ef4444; }
+.dot-purple { background: #8b5cf6; }
+.dot-orange { background: #f59e0b; }
+.dot-blue { background: #3b82f6; }
+.dot-green { background: #10b981; }
+.dot-gray { background: #94a3b8; }
+@media (max-width: 768px) {
+  .rules-grid { grid-template-columns: 1fr; }
+  .rules-card { padding: 14px; }
 }
 </style>

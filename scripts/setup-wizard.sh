@@ -83,7 +83,6 @@ write_secret "$SECRETS_DIR/internal-api-token"        "$(gen_random 64)"
 touch_optional "$SECRETS_DIR/commercial-backend-access-token"
 touch_optional "$SECRETS_DIR/embedding-api-key"
 touch_optional "$SECRETS_DIR/ai-provider-api-key"
-touch_optional "$SECRETS_DIR/amap-api-key"
 
 # ---------- 5. admin bcrypt 密码 hash（由 start.sh 用 api 镜像统一生成） ----------
 # 不在主机生成：避免主机无 Python、pip install 超时、Docker 临时镜像拉取慢等耗时环节。

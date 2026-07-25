@@ -1914,7 +1914,7 @@ async function sendImage(file) {
         time: new Date().toLocaleTimeString('zh-CN', { hour12: false })
       })
       events.value = events.value.slice(0, 20)
-      await refreshAll(true)
+      await loadConversations(true, { background: true })
     } else {
       if (outcome.status === 'failed' && outcome.retrySafe && previousConversation) {
         updateConversationPreview(previousConversation, () => previousConversation)
@@ -2070,7 +2070,7 @@ async function sendImageByUrl() {
         time: new Date().toLocaleTimeString('zh-CN', { hour12: false })
       })
       events.value = events.value.slice(0, 20)
-      await refreshAll(true)
+      await loadConversations(true, { background: true })
     }
     if (unknownCount > 0) {
       error.value = `${unknownCount} 张图片发送结果待核对，请先在闲鱼 App 检查；系统已禁止直接重试。`
@@ -2993,8 +2993,10 @@ async function sendText() {
     }
     const sendRes = await sendMessage(payload)
     const outcome = resolveManualMessageOutcome(sendRes)
-    contextMessages.value = contextMessages.value.map(item =>
-      item.id === tempId ? applyManualMessageOutcome(item, outcome) : item
+    contextMessages.value = normalizeContextMessageList(
+      contextMessages.value.map(item =>
+        item.id === tempId ? applyManualMessageOutcome(item, outcome) : item
+      )
     )
     if (outcome.status === 'confirmed') {
       events.value.unshift({
@@ -3002,7 +3004,10 @@ async function sendText() {
         time: new Date().toLocaleTimeString('zh-CN', { hour12: false })
       })
       events.value = events.value.slice(0, 20)
-      await refreshAll(true)
+      // 只刷新会话列表，不立即刷新消息上下文。
+      // 消息上下文的刷新交给 SSE 的 sseDebounceTimer（500ms 后），
+      // 避免 loadContext 过早用 DB 数据覆盖本地 sent 消息，导致后续 SSE 事件无法合并而重复显示。
+      await loadConversations(true, { background: true })
     } else {
       if (outcome.status === 'failed' && outcome.retrySafe && previousConversation) {
         updateConversationPreview(previousConversation, () => previousConversation)
@@ -3089,7 +3094,11 @@ async function retrySendMessage(message) {
       item.id === message.id ? applyManualMessageOutcome(item, outcome) : item
     )
     if (outcome.status === 'confirmed') {
-      await refreshAll(true)
+      if (retryAction.kind === 'image') {
+        await loadConversations(true, { background: true })
+      } else {
+        await refreshAll(true)
+      }
     } else {
       error.value = manualMessageErrorText(outcome, retryAction.kind === 'image' ? '图片' : '消息')
     }
@@ -3124,8 +3133,50 @@ function onSse(event) {
 
   const normalizedIncoming = normalizeMessages([data])[0]
   const currentChat = isSameConversationByPayload(selected.value, data)
-  const exists = contextMessages.value.some(item => messageIdentity(item) === messageIdentity(normalizedIncoming))
-  if (currentChat && !exists) {
+  const incomingIdentity = messageIdentity(normalizedIncoming)
+  const exists = contextMessages.value.some(item => messageIdentity(item) === incomingIdentity)
+
+  // 对自己发送的 OUT 消息：同一条消息会通过三个源到达前端，且 pnmId 各不相同：
+  //   1. 前端乐观更新（pnmId=temp_xxx）
+  //   2. 后端 misc.py SSE 广播（pnmId=sent_uuid，后端生成的 UUID）
+  //   3. WS 回环 SSE 广播（pnmId=real_pnmId，闲鱼服务端真实 pnmId）
+  // 此外 loadContext 可能用 DB 数据（pnmId="" 或 message_uid）覆盖本地 sent 消息，
+  // 导致后续 SSE 事件无法基于 sendStatus/pnmId 合并。
+  // 因此这里改为基于「OUT 方向 + 内容相同 + 时间窗口内」合并，不依赖 sendStatus 和 pnmId，
+  // 确保三个源 + DB 数据都能合并成同一条消息。
+  const isOutgoing = String(normalizedIncoming.direction || '').toUpperCase() === 'OUT'
+  let mergedWithPending = false
+  if (currentChat && !exists && isOutgoing) {
+    const incomingContent = String(normalizedIncoming.msgContent || normalizedIncoming.content || '').trim()
+    const incomingTime = parseMessageTimestamp(normalizedIncoming.messageTime || normalizedIncoming.createdTime || 0)
+    if (incomingContent) {
+      contextMessages.value = contextMessages.value.map(item => {
+        if (mergedWithPending) return item
+        // 只匹配 OUT 方向的本地消息（IN 方向是买家消息，不合并）
+        if (String(item.direction || '').toUpperCase() !== 'OUT') return item
+        const itemContent = String(item.msgContent || item.content || '').trim()
+        if (itemContent !== incomingContent) return item
+        const itemTime = parseMessageTimestamp(item.messageTime || item.createdTime || 0)
+        // 同会话 + 内容相同 + 60 秒时间窗口内，视为同一条消息
+        if (itemTime && incomingTime && Math.abs(itemTime - incomingTime) > 60000) return item
+        // 命中合并：更新 pnmId（优先用 incoming 的真实 pnmId）、状态等
+        mergedWithPending = true
+        const itemPnmId = String(item.pnmId || '')
+        const incomingPnmId = String(normalizedIncoming.pnmId || '')
+        return {
+          ...item,
+          pnmId: incomingPnmId || itemPnmId,
+          id: (normalizedIncoming.id && !String(normalizedIncoming.id).startsWith('temp_')) ? normalizedIncoming.id : item.id,
+          sendStatus: 'sent',
+          retrySafe: false,
+          readStatus: 1,
+          messageTime: normalizedIncoming.messageTime || item.messageTime
+        }
+      })
+    }
+  }
+
+  if (currentChat && !exists && !mergedWithPending) {
     contextMessages.value = normalizeContextMessageList([...contextMessages.value, normalizedIncoming])
     nextTick(() => scrollToBottom())
   }

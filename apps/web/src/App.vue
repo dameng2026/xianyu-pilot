@@ -147,6 +147,7 @@ const pageMap = {
   'scheduled-tasks': asyncPage(() => import('./pages/ScheduledTasksPage.vue')),
   'auto-reply': asyncPage(() => import('./pages/AutoReplyPage.vue')),
   'slider-solve-records': asyncPage(() => import('./pages/SliderSolveRecordsPage.vue')),
+  'remote-slider-api': asyncPage(() => import('./pages/RemoteSliderApiPage.vue')),
   logs: asyncPage(() => import('./pages/LogsPage.vue')),
   feedback: asyncPage(() => import('./pages/FeedbackPage.vue')),
   'ad-application': asyncPage(() => import('./pages/AdApplicationPage.vue')),
@@ -157,7 +158,6 @@ const pageMap = {
 const settingsKeys = [
   'settings-ai-cs',
   'settings-system',
-  'settings-amap',
   'settings-model',
   'settings-embedding',
   'settings-rag',
@@ -571,7 +571,7 @@ const headerActions = computed(() => {
       { text: '保存系统配置', type: 'primary', event: 'settings-save' }
     ]
   }
-  if (active.value === 'settings-amap' || active.value === 'settings-model' || active.value === 'settings-embedding') {
+  if (active.value === 'settings-model' || active.value === 'settings-embedding') {
     return [
       { text: '重新加载', type: 'ghost', event: 'settings-reload' },
       { text: '保存设置', type: 'primary', event: 'settings-save' }

@@ -73,10 +73,15 @@ function safeErrorType(e: unknown): string {
 }
 
 function resolveHeadlessMode(headless?: boolean): boolean {
-  if (isProductionLike(process.env.NODE_ENV || process.env.APP_ENV)) return true;
+  // 显式传入的 headless 参数优先级最高。
+  // 前台手动求解场景（前端传 headless=false）需要弹出 Chrome 窗口便于人工观察，
+  // 即使本地用 .env (APP_ENV=production) 启动 crawler 也要尊重此选择。
+  // 注意：Docker 容器内无 DISPLAY 时启动有头浏览器会失败，由调用方捕获错误。
   if (typeof headless === 'boolean') {
     return headless;
   }
+  // 未显式传入时按环境兜底：生产环境默认无头（自动触发场景）
+  if (isProductionLike(process.env.NODE_ENV || process.env.APP_ENV)) return true;
   if (process.env.HEADLESS === 'true') {
     return true;
   }
@@ -216,28 +221,6 @@ const ANTI_DETECT_SCRIPT = `
       get: () => 8,
       configurable: true,
     });
-
-    // 8. Canvas 指纹微扰动：在 toDataURL 返回值中注入微小噪声
-    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-    HTMLCanvasElement.prototype.toDataURL = function(...args) {
-      const ctx = this.getContext('2d');
-      if (ctx) {
-        try {
-          const w = this.width, h = this.height;
-          if (w > 0 && h > 0) {
-            const img = ctx.getImageData(0, 0, w, h);
-            // 在 R 通道注入 ±1 的微小噪声（视觉不可见，但改变指纹哈希）
-            for (let i = 0; i < img.data.length; i += 4) {
-              if (Math.random() < 0.03) {  // 3% 像素扰动
-                img.data[i] = (img.data[i] + (Math.random() < 0.5 ? -1 : 1)) & 0xff;
-              }
-            }
-            ctx.putImageData(img, 0, 0);
-          }
-        } catch (e) {}
-      }
-      return origToDataURL.apply(this, args);
-    };
 
     // 9. 隐藏 Playwright/CDP 注入痕迹
     // 移除 window.cdc_ 开头的属性（Chrome DevTools Controller 注入的标记）
@@ -387,21 +370,179 @@ async function findSliderButtonInFrames(frame: any, selectors: string[]): Promis
 }
 
 /**
+ * 兜底：在 frame 内通过启发式查找滑块按钮。
+ * 当所有已知 selector 都匹配不到时调用，在常见的 Baxia 容器内查找
+ * "宽度 24-60px、高度 24-60px、绝对/相对定位、cursor:pointer 或可拖动"的小方块元素。
+ *
+ * 这是必要的兜底，因为阿里 Baxia 滑块组件会定期更换 DOM 结构和 class 名，
+ * 静态 selector 列表无法覆盖所有版本。
+ */
+async function findSliderButtonByHeuristic(frame: any): Promise<{ button: any; frame: any } | null> {
+  // 启发式 evaluate 脚本：在常见容器内查找疑似滑块按钮
+  const heuristicScript = `
+    () => {
+      // 候选容器：Baxia 标准容器 + 任何看起来像滑块的容器
+      const containerSelectors = [
+        '#nc_1', '.nc_wrapper', '.J_MIDDLEWARE_FRAME',
+        '.slide-verify', '#baxia-dialog', '.nc-container',
+        '[class*="nc_"]', '[id*="nc_"]', '[class*="slider"]', '[class*="slide"]'
+      ];
+      const containers = new Set();
+      for (const sel of containerSelectors) {
+        document.querySelectorAll(sel).forEach(el => containers.add(el));
+      }
+      // 兜底：整个文档
+      containers.add(document);
+
+      // 在容器内查找疑似滑块按钮：小方块 + 可拖动样式
+      const candidates = [];
+      for (const container of containers) {
+        const elems = container.querySelectorAll
+          ? container.querySelectorAll('div, span, a, button, i, em')
+          : [];
+        for (const el of elems) {
+          const rect = el.getBoundingClientRect();
+          // 滑块按钮尺寸：宽 24-60px，高 24-60px
+          if (rect.width < 24 || rect.width > 60) continue;
+          if (rect.height < 24 || rect.height > 60) continue;
+          // 必须可见
+          if (rect.bottom <= 0 || rect.right <= 0) continue;
+          if (window.getComputedStyle(el).visibility === 'hidden') continue;
+          if (window.getComputedStyle(el).display === 'none') continue;
+          // cursor 指针或可拖动样式
+          const cursor = window.getComputedStyle(el).cursor;
+          const isDraggable = cursor === 'pointer' || cursor === 'move' || cursor === 'grab'
+            || el.draggable || el.getAttribute('draggable') === 'true';
+          // 排除明显是文字、图标、链接的元素
+          const text = (el.innerText || '').trim();
+          if (text.length > 5) continue;
+          // 评分：可拖动 +5，正方形 +3，绝对/相对定位 +2
+          let score = 0;
+          if (isDraggable) score += 5;
+          const sizeDiff = Math.abs(rect.width - rect.height);
+          if (sizeDiff < 8) score += 3;
+          const position = window.getComputedStyle(el).position;
+          if (position === 'absolute' || position === 'relative') score += 2;
+          candidates.push({ selector: el, score, x: rect.left, y: rect.top, w: rect.width, h: rect.height });
+        }
+      }
+      // 选评分最高的
+      candidates.sort((a, b) => b.score - a.score);
+      return candidates.slice(0, 3).map(c => ({
+        x: c.x, y: c.y, w: c.w, h: c.h, score: c.score
+      }));
+    }
+  `;
+  try {
+    const results = await frame.evaluate(heuristicScript);
+    if (Array.isArray(results) && results.length > 0) {
+      const top = results[0];
+      if (top.score >= 5) {
+        console.log(`[SliderSolver] 启发式找到疑似滑块按钮: x=${top.x}, y=${top.y}, w=${top.w}, h=${top.h}, score=${top.score}`);
+        // 用 elementHandle 的方式重新获取：通过 boundingBox 找到对应元素
+        // 由于 evaluate 不能直接返回 ElementHandle，我们用 frame.$$ 配合筛选
+        // 简化方案：找到所有候选元素，逐个对比 boundingBox
+        const allCandidates = await frame.$$('div, span, a, button, i, em');
+        for (const el of allCandidates) {
+          try {
+            const box = await el.boundingBox();
+            if (!box) continue;
+            if (Math.abs(box.x - top.x) < 2 && Math.abs(box.y - top.y) < 2
+                && Math.abs(box.width - top.w) < 2 && Math.abs(box.height - top.h) < 2) {
+              return { button: el, frame };
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    console.log(`[SliderSolver] 启发式查找失败: ${safeErrorType(e)}`);
+  }
+  return null;
+}
+
+/**
  * 获取滑块按钮位置和滑块轨道宽度
  * 递归查找所有嵌套 iframe 中的滑块按钮（baxia 滑块通常在多层 iframe 中）
+ *
+ * 查找顺序：
+ * 1. 已知 selector 列表（覆盖大多数 Baxia 版本）
+ * 2. 启发式查找（兜底，应对阿里定期更换 DOM 结构）
  */
 async function getSliderInfo(frame: any): Promise<{ button: any; trackWidth: number; buttonBox: { x: number; y: number; width: number; height: number }; ownerFrame: any } | null> {
-  const buttonSelectors = ['#nc_1_n1z', '.btn_slide', '.nc_iconfont', '.slide-btn', '#nc_1_n1t', '.nc-lang-cnt', '[data-role="slider"]'];
+  // 扩充 selector 列表，覆盖 Baxia 各个版本（含 2024+ 新版）
+  const buttonSelectors = [
+    '#nc_1_n1z',          // Baxia 经典滑块按钮
+    '.btn_slide',         // 通用 .btn_slide
+    '.nc_iconfont',       // Baxia 图标按钮
+    '.slide-btn',         // 通用 slide-btn
+    '#nc_1_n1t',          // Baxia 备用
+    '.nc-lang-cnt',       // Baxia 语言按钮
+    '[data-role="slider"]',  // data-role 标记
+    '#nc_1_n1z .icon',    // 嵌套图标
+    '.btn_slide > i',     // 嵌套图标
+    '#aliyunCaptcha-sliding-slider',  // 阿里云验证码 2.0
+    '#nc_1_n1z[style]',   // 带内联样式的滑块按钮
+    '.J_MIDDLEWARE_FRAME .btn_slide',  // 中间件框架内
+    'span.nc_iconfont',   // span 包裹的图标
+    '#baxia-dialog .btn_slide',  // baxia-dialog 内
+    'div[role="button"][class*="slide"]',  // role=button 的滑块
+    'div[draggable="true"][class*="slide"]',  // 可拖动滑块
+  ];
   // 递归查找所有 frame（包括嵌套 iframe）中的滑块按钮
-  const found = await findSliderButtonInFrames(frame, buttonSelectors);
+  let found = await findSliderButtonInFrames(frame, buttonSelectors);
+
+  // 兜底：selector 都匹配不到时，用启发式查找
+  if (!found) {
+    let foundHeuristic = false;
+    // 在主 frame 和所有子 frame 中尝试启发式查找
+    const framesToTry: any[] = [frame];
+    try {
+      const childFrames = frame.childFrames ? frame.childFrames() : [];
+      framesToTry.push(...childFrames);
+    } catch { /* ignore */ }
+    for (const tryFrame of framesToTry) {
+      try {
+        const heuristicResult = await findSliderButtonByHeuristic(tryFrame);
+        if (heuristicResult) {
+          found = heuristicResult;
+          foundHeuristic = true;
+          console.log(`[SliderSolver] 启发式查找成功，frame URL: ${tryFrame.url()}`);
+          break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!foundHeuristic) {
+      // 打印详细调试信息，帮助诊断
+      const frameUrls: string[] = [];
+      try {
+        frameUrls.push(frame.url());
+        const allFrames = frame.childFrames ? frame.childFrames() : [];
+        for (const f of allFrames) {
+          try { frameUrls.push(f.url()); } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+      console.warn(`[SliderSolver] getSliderInfo 找不到滑块按钮。已尝试 selector: ${buttonSelectors.join(', ')}`);
+      console.warn(`[SliderSolver] 涉及 frame URLs: ${frameUrls.slice(0, 5).join(' | ')}`);
+    }
+  }
+
   if (!found) return null;
 
   const { button, frame: ownerFrame } = found;
   const box = await button.boundingBox();
-  if (!box) return null;
+  if (!box) {
+    console.warn('[SliderSolver] 滑块按钮 boundingBox 返回 null（可能元素已从 DOM 中移除）');
+    return null;
+  }
 
   // 在按钮所在的 frame 中查找滑块轨道
-  const trackSelectors = ['.nc_scale', '.scale_text', '.slide-track', '#nc_1__scale', '.nc-lang'];
+  const trackSelectors = ['.nc_scale', '.scale_text', '.slide-track', '#nc_1__scale', '.nc-lang',
+    '.nc_wrapper', '.slide-verify-track', '.slider-track', '[class*="track"]'];
   let trackWidth = 300; // 默认轨道宽度
   for (const tsel of trackSelectors) {
     try {
@@ -418,6 +559,7 @@ async function getSliderInfo(frame: any): Promise<{ button: any; trackWidth: num
       // ignore
     }
   }
+  console.log(`[SliderSolver] 滑块信息: buttonBox={x:${box.x.toFixed(0)}, y:${box.y.toFixed(0)}, w:${box.width.toFixed(0)}, h:${box.height.toFixed(0)}}, trackWidth=${trackWidth.toFixed(0)}`);
   return { button, trackWidth, buttonBox: box, ownerFrame };
 }
 
@@ -443,6 +585,16 @@ async function humanLikeDrag(
   distance: number,
   attempt: number = 1
 ): Promise<void> {
+  // 入口诊断日志：确认 humanLikeDrag 被实际调用，便于排查"没看到滑动"问题
+  // 坐标合理性检查：startX/startY 应在 viewport（1280x800）内、distance 应为正数
+  const coordValid = Number.isFinite(startX) && Number.isFinite(startY)
+    && Number.isFinite(distance) && distance > 0
+    && startX > 0 && startY > 0 && startX < 2000 && startY < 2000;
+  console.log(`[SliderSolver] humanLikeDrag 入口: startX=${startX.toFixed(1)}, startY=${startY.toFixed(1)}, distance=${distance.toFixed(1)}, attempt=${attempt}, coordValid=${coordValid}`);
+  if (!coordValid) {
+    console.warn(`[SliderSolver] 坐标异常，可能导致鼠标在错误位置拖动。可能原因：boundingBox 返回错误坐标（cross-origin iframe）`);
+  }
+
   // 根据 attempt 选择不同的速度策略（每次重试速度不同）
   let stepsBase: number;
   let stepDelayMin: number;
@@ -496,19 +648,21 @@ async function humanLikeDrag(
   const actualStartY = startY + (Math.random() - 0.5) * 6;
 
   // 1. 接近轨迹：从按钮附近随机点移入（非瞬移到按钮中心）
+  // 使用 steps:8 让鼠标移动有可视化轨迹（headful 模式下肉眼可见）
   const approachAngle = Math.random() * Math.PI * 2;
   const approachDist = 40 + Math.random() * 80;
   const approachX = actualStartX + Math.cos(approachAngle) * approachDist;
   const approachY = actualStartY + Math.sin(approachAngle) * approachDist;
-  await page.mouse.move(approachX, approachY);
+  await page.mouse.move(approachX, approachY, { steps: 8 });
   await page.waitForTimeout(80 + Math.random() * 120);
-  const approachSteps = 8 + Math.floor(Math.random() * 8);
+  const approachSteps = 3 + Math.floor(Math.random() * 3);
   for (let i = 1; i <= approachSteps; i++) {
     const t = i / approachSteps;
     const eased = t * t * (3 - 2 * t);
     await page.mouse.move(
       approachX + (actualStartX - approachX) * eased,
       approachY + (actualStartY - approachY) * eased,
+      { steps: 5 },
     );
     await page.waitForTimeout(12 + Math.random() * 25);
   }
@@ -520,7 +674,7 @@ async function humanLikeDrag(
   // 按下后短暂停顿（80-180ms，模拟按下后开始滑动）
   await page.waitForTimeout(80 + Math.random() * 100);
   // 按下后微小漂移（真人按下到开始拖动之间鼠标常有 1-2px 漂移，非完美静止）
-  await page.mouse.move(actualStartX + (Math.random() - 0.5) * 3, actualStartY + (Math.random() - 0.5) * 3, { steps: 1 });
+  await page.mouse.move(actualStartX + (Math.random() - 0.5) * 3, actualStartY + (Math.random() - 0.5) * 3, { steps: 3 });
   await page.waitForTimeout(30 + Math.random() * 50);
 
   // 3. 分多步拖动，使用不对称三阶段速度曲线（真人加速段短、匀速段长、减速段居中）
@@ -564,7 +718,9 @@ async function humanLikeDrag(
     lastY = currentY;
 
     // 使用 page.mouse.move 生成真实 mousemove 事件
-    await page.mouse.move(targetX, currentY, { steps: 1 });
+    // steps: 3 让每步移动有 3 个 mousemove 事件，肉眼可见鼠标在"滑"而非瞬移
+    // 同时保持每个 mousemove 事件之间的距离合理（约 3-5px），符合 Baxia 对轨迹密度的要求
+    await page.mouse.move(targetX, currentY, { steps: 3 });
 
     // 每步间隔：对数正态分布（多数快、偶尔慢，比均匀分布更接近真人）
     const medianDelay = stepDelayMin + (stepDelayMax - stepDelayMin) * 0.4;
@@ -592,9 +748,9 @@ async function humanLikeDrag(
   // 4. 终点过冲后回退（人类拖动常见行为：滑过头再退回来）
   await page.waitForTimeout(30 + Math.random() * 70);
   const overshoot = 5 + Math.random() * 8;  // 过冲 5-13px
-  await page.mouse.move(actualStartX + distance + overshoot, actualStartY + (Math.random() - 0.5) * 10, { steps: 2 });
+  await page.mouse.move(actualStartX + distance + overshoot, actualStartY + (Math.random() - 0.5) * 10, { steps: 4 });
   await page.waitForTimeout(50 + Math.random() * 80);
-  await page.mouse.move(actualStartX + distance, actualStartY + (Math.random() - 0.5) * 6, { steps: 2 });
+  await page.mouse.move(actualStartX + distance, actualStartY + (Math.random() - 0.5) * 6, { steps: 4 });
 
   // 5. 释放前微调（真人释放前常有 1-2 次微小位置修正，非完美静止释放）
   const numAdjustments = Math.random() < 0.7 ? 1 : 2;  // 70% 概率 1 次，30% 概率 2 次
@@ -602,7 +758,7 @@ async function humanLikeDrag(
     await page.waitForTimeout(40 + Math.random() * 60);
     const adjustX = (Math.random() - 0.5) * 4;
     const adjustY = (Math.random() - 0.5) * 4;
-    await page.mouse.move(actualStartX + distance + adjustX, actualStartY + adjustY, { steps: 1 });
+    await page.mouse.move(actualStartX + distance + adjustX, actualStartY + adjustY, { steps: 2 });
   }
   // 释放前短暂停顿（50-120ms）
   await page.waitForTimeout(50 + Math.random() * 70);
@@ -1266,9 +1422,9 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
   const startTime = Date.now();
   const targetUrl = options.targetUrl || DEFAULT_TARGET_URL;
   const headless = resolveHeadlessMode(options.headless);
-  // 默认重试 5 次，覆盖场景2(点击框体重试)、场景3(加载转圈)、场景4(下载消息失败刷新)等多种重试场景
-  const retries = Number(options.maxRetries ?? 5);
-  const maxRetries = Number.isSafeInteger(retries) ? Math.max(1, Math.min(retries, 10)) : 5;
+  // 默认重试 4 次（开源版已削弱本地求解能力）
+  const retries = Number(options.maxRetries ?? 4);
+  const maxRetries = Number.isSafeInteger(retries) ? Math.max(1, Math.min(retries, 10)) : 4;
   const timeout = Number(options.timeoutMs ?? 30000);
   const timeoutMs = Number.isSafeInteger(timeout) ? Math.max(5000, Math.min(timeout, 180000)) : 30000;
 
@@ -1455,14 +1611,14 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
     let needReloadForDownload = false;
     // 场景5：刷新小弹窗后需要刷新页面重新验证，限制最多刷新5次
     let refreshRetryCount = 0;
-    const MAX_REFRESH_RETRIES = 5;
+    const MAX_REFRESH_RETRIES = 3;
     let needReloadForRefresh = false;
     // 场景2：点击框体重试限制，与 maxRetries 一致，确保每次失败都能点击重试
     let clickRetryCount = 0;
     const MAX_CLICK_RETRIES = 5;
     // 真人行动模拟：连续失败 N 次后触发"关闭弹窗→刷新页面→冷静期→重新尝试"
     const HUMAN_ACTION_THRESHOLD = 3;  // 连续失败 3 次后触发
-    const MAX_HUMAN_ACTIONS = 2;       // 最多触发 2 次真人行动
+    const MAX_HUMAN_ACTIONS = 1;       // 开源版已削弱真人行动模拟次数（原 2 次，削弱为 1 次）
     let humanActionCount = 0;
     // 真人行动刷新后的冷静期标志：刷新完成后不立即操作，等待 3-7 秒让 Baxia 检测状态自然重置
     let needCooldownAfterHumanAction = false;
@@ -1635,16 +1791,9 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
       try {
         // 使用 page.mouse API 生成真实鼠标事件（isTrusted=true），对抗 Baxia 风控的合成事件检测
         // 传入 attempt 让每次重试使用不同的滑动速度和停顿策略，模拟真人滑动
-        // 按 attempt 轮换使用两种拖动方法，增加成功概率：
-        //   奇数 attempt（1,3,5...）: 容器内精确拖动（humanLikeDrag）
-        //   偶数 attempt（2,4,6...）: 超出容器拖动（humanLikeDragOutOfContainer）
-        if (attempt % 2 === 0) {
-          console.log(`[SliderSolver] attempt=${attempt} 使用【超出容器】拖动方法（Y 偏移 ±50-120px）`);
-          await humanLikeDragOutOfContainer(page, ownerFrame || frame, button, startX, startY, trackWidth, attempt);
-        } else {
-          console.log(`[SliderSolver] attempt=${attempt} 使用【容器内】拖动方法（Y 抖动 ±8px）`);
-          await humanLikeDrag(page, ownerFrame || frame, button, startX, startY, trackWidth, attempt);
-        }
+        // 开源版仅使用容器内拖动方法（已削弱本地求解能力，移除超出容器拖动方法轮换）
+        console.log(`[SliderSolver] attempt=${attempt} 使用容器内拖动方法`);
+        await humanLikeDrag(page, ownerFrame || frame, button, startX, startY, trackWidth, attempt);
       } catch (e: any) {
         lastError = '拖动滑块异常，请稍后重试';
         console.error(`[SliderSolver] operation=drag errorType=${safeErrorType(e)}`);

@@ -11,6 +11,7 @@
 单租户版：无 tenant_id，API 直接通过 /api/captcha/... 暴露（无 Java 网关拆包）。
 """
 import logging
+from typing import Optional
 from fastapi import APIRouter, Depends
 
 from ....core.response import ResultObject
@@ -89,7 +90,7 @@ async def auto_solve_captcha(
     请求体: {
         "accountId": 1,
         "targetUrl": "https://www.goofish.com/",  # 可选
-        "headless": false,  # 可选，默认 false
+        "headless": false,  # 可选，默认 false（前台手动求解时弹出浏览器窗口便于观察）
         "maxRetries": 3,    # 可选
         "triggerScene": "manual",
         "openReason": "",
@@ -98,6 +99,12 @@ async def auto_solve_captcha(
 
     说明：统一走 handle_captcha_for_account(auto_solve=True)，保证每次求解
     （手动/重试/自动）都落库到 xianyu_captcha_solve_record，可在记录页查看。
+
+    headless 字段说明：
+    - 未传（None）：使用 try_auto_solve 默认（True，无头模式，不弹窗），适用于自动触发场景
+    - false：有头模式，会弹出 Chrome 窗口，适用于前台手动求解
+    - true：强制无头模式
+    注意：crawler-service 容器的 CRAWLER_FORCE_HEADLESS=true 会强制覆盖此参数。
     """
     try:
         account_id = int(data.get("accountId") or 0)
@@ -108,6 +115,12 @@ async def auto_solve_captcha(
         open_reason = str(data.get("openReason") or "")
         solve_reason = str(data.get("solveReason") or "")
 
+        # headless 字段：未传时为 None（沿用默认无头），传 false 时弹窗
+        headless_value = data.get("headless")
+        headless: Optional[bool] = None
+        if headless_value is not None:
+            headless = bool(headless_value)
+
         # 统一走综合处理：创建记录 + 求解 + 更新记录 + SSE
         handled = await handle_captcha_for_account(
             account_id=account_id,
@@ -116,6 +129,7 @@ async def auto_solve_captcha(
             trigger_scene=trigger_scene,
             open_reason=open_reason,
             solve_reason=solve_reason,
+            headless=headless,
         )
         result = handled.get("autoSolveResult") or {}
         if not result.get("success") and not result.get("solved"):
@@ -146,10 +160,17 @@ async def handle_captcha(
         "accountId": 1,
         "response": <dict 或 str>,    # 可选，用于检测
         "autoSolve": true,              # 是否自动求解
+        "headless": false,              # 可选，默认 false（前台手动求解弹窗，便于观察）
         "triggerScene": "manual",       # 触发场景
         "openReason": "",               # 开启原因（为什么打开滑块求解流程）
         "solveReason": ""               # 求解原因（为什么进行滑块求解）
     }
+
+    headless 字段说明：
+    - 未传（None）：使用 try_auto_solve 默认（True，无头模式，不弹窗），适用于自动触发场景
+    - false：有头模式，会弹出 Chrome 窗口，适用于前台手动求解
+    - true：强制无头模式
+    注意：crawler-service 容器的 CRAWLER_FORCE_HEADLESS=true 会强制覆盖此参数。
     """
     try:
         account_id = int(data.get("accountId") or 0)
@@ -158,6 +179,12 @@ async def handle_captcha(
         trigger_scene = str(data.get("triggerScene") or "manual")
         open_reason = str(data.get("openReason") or "")
         solve_reason = str(data.get("solveReason") or "")
+
+        # headless 字段：未传时为 None（沿用默认无头），传 false 时弹窗
+        headless_value = data.get("headless")
+        headless: Optional[bool] = None
+        if headless_value is not None:
+            headless = bool(headless_value)
 
         if not account_id:
             return ResultObject.validate_failed("accountId 不能为空")
@@ -169,6 +196,7 @@ async def handle_captcha(
             trigger_scene=trigger_scene,
             open_reason=open_reason,
             solve_reason=solve_reason,
+            headless=headless,
         )
         return ResultObject.success(result)
     except Exception as exc:
@@ -206,4 +234,46 @@ async def list_captcha_records(
         return ResultObject.success(result)
     except Exception as exc:
         logger.error("查询滑块记录失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()
+
+
+# ============================================================
+# 远程滑块求解记录
+# ============================================================
+
+@router.get("/remote-solve-records", response_model=ResultObject[dict])
+async def list_remote_solve_records_route(
+    page: int = 1,
+    pageSize: int = 20,
+    status: str = "",
+    keyword: str = "",
+    current_user: dict = Depends(get_current_user),
+):
+    """分页查询远程滑块求解记录。"""
+    try:
+        from ....services.remote_slider_record import list_remote_solve_records
+        result = await list_remote_solve_records(
+            page=max(1, page),
+            page_size=min(100, max(1, pageSize)),
+            status=status,
+            keyword=keyword,
+        )
+        return ResultObject.success(result)
+    except Exception as exc:
+        logger.error("查询远程滑块记录失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()
+
+
+@router.get("/remote-solve-stats", response_model=ResultObject[dict])
+async def get_remote_solve_stats_route(
+    days: int = 7,
+    current_user: dict = Depends(get_current_user),
+):
+    """获取远程滑块求解统计数据。"""
+    try:
+        from ....services.remote_slider_record import get_remote_solve_stats
+        result = await get_remote_solve_stats(days=max(1, min(90, days)))
+        return ResultObject.success(result)
+    except Exception as exc:
+        logger.error("获取远程滑块统计失败 errorType=%s", type(exc).__name__)
         return ResultObject.internal_error()

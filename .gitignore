@@ -34,8 +34,20 @@ dogfood-output/
 output/
 apps/api/uploads/
 apps/api/screenshots/
+apps/api/secrets/
 apps/crawler/screenshots/
 apps/web/mobile-*.png
+
+# Local backup files
+.env.production.bak
+.env.*.bak
+
+# Local-only debug/test scripts (not for public release)
+apps/api/check_qr_state.py
+apps/api/test_refresh_profile.py
+
+# Local visual scratch / screenshot dumps
+tmp-visual/
 
 # Internal migration/provenance working papers are archived outside the public tree.
 docs/handoffs/

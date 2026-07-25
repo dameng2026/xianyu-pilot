@@ -2,7 +2,7 @@
   <aside class="config-nav">
     <div class="config-nav-head">
       <span>系统设置</span>
-      <p>系统配置 / 高德地图 / 模型配置 / RAG 知识库</p>
+      <p>系统配置 / 模型配置 / RAG 知识库</p>
     </div>
 
     <div class="config-nav-list">

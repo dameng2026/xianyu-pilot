@@ -72,7 +72,6 @@ Write-Secret (Join-Path $SecretsDir "internal-api-token")       (New-RandomSecre
 Touch-Optional (Join-Path $SecretsDir "commercial-backend-access-token")
 Touch-Optional (Join-Path $SecretsDir "embedding-api-key")
 Touch-Optional (Join-Path $SecretsDir "ai-provider-api-key")
-Touch-Optional (Join-Path $SecretsDir "amap-api-key")
 
 # ---------- 4. admin bcrypt 密码 hash（由 start.bat 用 api 镜像统一生成） ----------
 # 不在主机生成：避免主机无 Python、pip install 超时、Docker 临时镜像拉取慢等耗时环节。

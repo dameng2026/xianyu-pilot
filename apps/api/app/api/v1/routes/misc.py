@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import hashlib
 import ipaddress
+import json
 import time
 import weakref
 from pathlib import Path
@@ -31,7 +32,7 @@ from ....core.upload_security import (
 from ....models.entities import (
     XianyuAccount,
     XianyuAccountAuth, XianyuAccountRuntime,
-    XianyuGoods, XianyuSysSetting
+    XianyuGoods,
 )
 from ....services.ws_client import ws_manager
 from ....services.ws_storage import save_chat_message
@@ -48,11 +49,6 @@ from ....services.xianyu_goods_sync import (
     _get_token_from_cookie as _xianyu_token_from_cookie,
 )
 from ....services.auto_category import upload_image_to_xianyu as _upload_image_to_xianyu
-from ....services.sensitive_config import (
-    AMAP_API_KEY_PURPOSE,
-    decrypt_runtime_secret,
-    decrypt_system_config_secrets,
-)
 from ....services.manual_message_attempt import (
     ManualMessageAttemptError,
     ManualMessageCommand,
@@ -692,7 +688,7 @@ async def _save_scan_login_result(session_id: str, db: AsyncSession) -> dict:
 media_router = APIRouter(prefix="/media")
 image_router = APIRouter(prefix="/image")
 captcha_router = APIRouter(prefix="/captcha")
-amap_router = APIRouter(prefix="/amap")
+address_dict_router = APIRouter(prefix="/address-dict")
 backup_router = APIRouter(prefix="/backup")
 excel_router = APIRouter(prefix="/excel")
 goods_sku_router = APIRouter(prefix="/goods-sku")
@@ -788,11 +784,24 @@ async def qrlogin_status(
                 )
 
             result = await asyncio.to_thread(get_session_status, session_id)
+            logger.info(
+                "QR status poll sessionId=%s status=%s persisted=%s accountId=%s",
+                session_id[:12],
+                result.get("status"),
+                result.get("persisted"),
+                result.get("accountId"),
+            )
             # A successful persistence receipt is replayed directly. Keeping
             # the confirmed session until TTL makes lost-response retries
             # idempotent without ever returning raw cookies to the browser.
             if result.get("status") == "confirmed" and not result.get("persisted"):
                 save_result = await _save_scan_login_result(session_id, db)
+                logger.info(
+                    "QR save_result sessionId=%s error=%s account_id=%s",
+                    session_id[:12],
+                    save_result.get("_error") if save_result else "no_result",
+                    save_result.get("account_id") if save_result else None,
+                )
                 if not save_result or save_result.get("_error"):
                     raise HTTPException(
                         status_code=503,
@@ -812,6 +821,13 @@ async def qrlogin_status(
                     session_id,
                     persistence_result,
                 )
+            logger.info(
+                "QR status response sessionId=%s final_status=%s final_accountId=%s persisted=%s",
+                session_id[:12],
+                result.get("status"),
+                result.get("accountId"),
+                result.get("persisted"),
+            )
             return ResultObject.success(result)
     except HTTPException:
         raise
@@ -897,60 +913,6 @@ business_opportunity_router = APIRouter(prefix="/business-opportunity", tags=["b
 crawler_router = APIRouter(prefix="/crawler", tags=["crawler"])
 # goofish_router：闲鱼商品搜索（前端 goofish.js 调用 /api/goofish/search）
 goofish_router = APIRouter(prefix="/goofish", tags=["goofish"])
-
-
-# 高德 POI 搜索结果缓存：TTL 降低上游 QPS，硬上限防止关键词键无限增长。
-_amap_poi_cache: dict[str, dict[str, object]] = {}
-_AMAP_CACHE_TTL = 60
-_AMAP_CACHE_MAX_ENTRIES = 256
-
-
-def _prune_amap_poi_cache(now: float) -> None:
-    expired: list[str] = []
-    for cache_key, entry in _amap_poi_cache.items():
-        try:
-            cached_at = float(entry.get("time") or 0)
-        except (TypeError, ValueError):
-            cached_at = 0
-        if now - cached_at >= _AMAP_CACHE_TTL:
-            expired.append(cache_key)
-    for cache_key in expired:
-        _amap_poi_cache.pop(cache_key, None)
-
-    overflow = len(_amap_poi_cache) - _AMAP_CACHE_MAX_ENTRIES
-    if overflow > 0:
-        oldest = sorted(
-            _amap_poi_cache.items(),
-            key=lambda item: (float(item[1].get("time") or 0), item[0]),
-        )[:overflow]
-        for cache_key, _entry in oldest:
-            _amap_poi_cache.pop(cache_key, None)
-
-
-def _get_amap_poi_cache(
-    cache_key: str,
-    *,
-    now: float | None = None,
-) -> list[dict] | None:
-    now = time.time() if now is None else now
-    _prune_amap_poi_cache(now)
-    cached = _amap_poi_cache.get(cache_key)
-    if not cached:
-        return None
-    pois = cached.get("pois")
-    return pois if isinstance(pois, list) else None
-
-
-def _store_amap_poi_cache(
-    cache_key: str,
-    pois: list[dict],
-    *,
-    now: float | None = None,
-) -> None:
-    now = time.time() if now is None else now
-    _prune_amap_poi_cache(now)
-    _amap_poi_cache[cache_key] = {"pois": pois, "time": now}
-    _prune_amap_poi_cache(now)
 
 
 def get_manual_message_runtime(
@@ -1068,181 +1030,6 @@ def _manual_message_send_result(result: object) -> ManualMessageSendResult:
     return ManualMessageSendResult.unknown("message_result_unknown")
 
 
-@amap_router.post("/inputtips")
-async def amap_inputtips(
-    data: dict = {},
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
-):
-    """高德地图 POI 输入提示（inputtips）搜索。
-    前端用户输入关键词后，调用高德 API 返回匹配的位置列表。
-    优先使用环境变量 amap_api_key，若未配置则从系统设置表读取。
-    """
-    keywords = (data.get("keywords") or "").strip() if isinstance(data, dict) else ""
-    if not keywords:
-        raise HTTPException(status_code=422, detail="keywords 不能为空。")
-
-    city = (data.get("city") or "").strip()
-
-    # 检查缓存（60 秒内相同关键词+城市直接返回，避免触发高德 QPS 限制）
-    cache_key = f"{keywords}|{city}"
-    now = time.time()
-    cached_pois = _get_amap_poi_cache(cache_key, now=now)
-    if cached_pois is not None:
-        return ResultObject.success(cached_pois)
-
-    api_key = (settings.amap_api_key or "").strip()
-
-    # 环境变量未配置时，尝试从系统设置表读取 amap_api_key 专用行
-    if not api_key:
-        try:
-            stmt = select(XianyuSysSetting).where(
-                XianyuSysSetting.setting_key == "amap_api_key"
-            ).limit(1)
-            result = await db.execute(stmt)
-            sys_setting = result.scalar_one_or_none()
-            if sys_setting and sys_setting.setting_value:
-                api_key = decrypt_runtime_secret(
-                    sys_setting.setting_value,
-                    purpose=AMAP_API_KEY_PURPOSE,
-                ).strip()
-        except Exception as exc:
-            logger.warning(
-                "Failed to load the dedicated AMap credential: error_type=%s",
-                type(exc).__name__,
-            )
-
-    # 仍未获取到，从 open_source.system_config JSON 中读取 amapApiKey
-    if not api_key:
-        try:
-            import json as _json
-            stmt2 = select(XianyuSysSetting).where(
-                XianyuSysSetting.setting_key == "open_source.system_config"
-            ).limit(1)
-            result2 = await db.execute(stmt2)
-            sys_cfg = result2.scalar_one_or_none()
-            if sys_cfg and sys_cfg.setting_value:
-                cfg = decrypt_system_config_secrets(
-                    _json.loads(sys_cfg.setting_value)
-                )
-                key_val = (cfg.get("amapApiKey") or "").strip()
-                if key_val:
-                    api_key = key_val
-        except Exception as exc:
-            logger.warning(
-                "Failed to load the system AMap credential: error_type=%s",
-                type(exc).__name__,
-            )
-
-    # 仍未获取到，从 Java 后台系统配置表 admin_module_record 读取（JSON 中 amapApiKey）
-    if not api_key:
-        try:
-            import json
-            sql = text(
-                "SELECT json_text FROM admin_module_record "
-                "WHERE module_key = 'system-settings' AND status = 'config' AND deleted = 0 "
-                "ORDER BY id ASC LIMIT 1"
-            )
-            result = await db.execute(sql)
-            row = result.scalar_one_or_none()
-            if row:
-                cfg = decrypt_system_config_secrets(json.loads(row))
-                key_val = (cfg.get("amapApiKey") or "").strip()
-                if key_val:
-                    api_key = key_val
-        except Exception as exc:
-            logger.warning(
-                "Failed to load the legacy AMap credential: error_type=%s",
-                type(exc).__name__,
-            )
-
-    if not api_key:
-        logger.warning("amap_api_key 未配置，无法搜索 POI")
-        raise HTTPException(
-            status_code=503,
-            detail="高德地图 API Key 未配置，请在系统设置中填写后重试",
-        )
-
-    try:
-        import httpx
-        # 浏览器风格请求头：v3 接口已被高德安全网关（bixi）拦截非浏览器请求，
-        # 必须携带 UA/Accept/Referer 才能正常返回 JSON；v5 接口同样需要。
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Referer": "https://lbs.amap.com/",
-        }
-        # v5 接口参数：page_size 替代 v3 的 offset，不再支持 extensions=base
-        params = {
-            "key": api_key,
-            "keywords": keywords,
-            "output": "json",
-            "page_size": 25,
-            "page": 1,
-        }
-        if city:
-            params["city"] = city
-
-        async with httpx.AsyncClient(
-            timeout=10,
-            follow_redirects=False,
-            trust_env=False,
-            headers=headers,
-        ) as client:
-            # 优先使用 v5 接口：v3 接口在高德安全网关升级后频繁返回 HTML 拦截页，
-            # 导致 resp.json() 抛出 JSONDecodeError。
-            resp = await client.get("https://restapi.amap.com/v5/place/text", params=params)
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "")
-            # 防御非 JSON 响应（安全网关拦截页、HTML 错误页等）
-            if "json" not in content_type and not resp.text.lstrip().startswith("{"):
-                logger.warning(
-                    "AMap v5 POI returned non-JSON response: content_type=%s body_prefix=%s",
-                    content_type[:64],
-                    resp.text[:120].replace("\n", " "),
-                )
-                raise HTTPException(
-                    status_code=502,
-                    detail="位置搜索上游被安全网关拦截，请稍后重试或在高德控制台检查 API Key 配置",
-                )
-            result = resp.json()
-
-        # v5 接口成功判定：infocode=10000 或 status=1，且包含 pois 字段
-        infocode = str(result.get("infocode") or "")
-        status = str(result.get("status") or "")
-        if infocode and infocode != "10000" and status != "1":
-            logger.warning(
-                "AMap upstream rejected a POI request: infocode=%s info=%s",
-                infocode[:32],
-                str(result.get("info") or "")[:64],
-            )
-            raise HTTPException(
-                status_code=502,
-                detail="位置搜索上游服务暂不可用，请稍后重试",
-            )
-
-        pois = result.get("pois", [])
-        # 过滤掉没有 name 的无效结果
-        valid_pois = [p for p in pois if p.get("name")]
-        # 缓存成功结果
-        if valid_pois:
-            _store_amap_poi_cache(cache_key, valid_pois, now=now)
-        return ResultObject.success(valid_pois)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(
-            "AMap POI request failed: error_type=%s error_msg=%s",
-            type(exc).__name__,
-            str(exc)[:200],
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="位置搜索服务暂不可用，请稍后重试",
-        ) from None
-
-
 @websocket_router.post("/sendMessage")
 async def websocket_send_message(
     data: dict = {},
@@ -1306,7 +1093,7 @@ async def websocket_send_message(
                 "accountId": account_id,
                 "sId": prepared["ws_sid"],
                 "sid": prepared["ws_sid"],
-                "pnmId": platform_message_id or "",
+                "pnmId": "",
                 "senderUserId": prepared["sender_id"],
                 "senderUserName": "我",
                 "receiverUserId": prepared["ws_to_id"],
@@ -1397,6 +1184,10 @@ async def websocket_send_message(
                     account_id, type(exc).__name__,
                 )
 
+            # SSE 广播使用与 DB 持久化相同的 pnmId（由 save_chat_message 回写）。
+            # save_chat_message 在 pnmId 为空时会生成兜底哈希并回写到 event，
+            # 确保 SSE 事件与 DB 记录拥有同一身份，前端可正确去重。
+            # platform_message_id 不再作为 pnmId 使用，否则会与 DB 记录的身份不一致。
             event_holder.update(event)
             return local_message_id
 
@@ -1510,7 +1301,7 @@ async def websocket_send_image_message(
                 "accountId": account_id,
                 "sId": prepared["ws_sid"],
                 "sid": prepared["ws_sid"],
-                "pnmId": platform_message_id or "",
+                "pnmId": "",
                 "senderUserId": prepared["sender_id"],
                 "senderUserName": "我",
                 "receiverUserId": prepared["ws_to_id"],
@@ -1646,6 +1437,9 @@ async def websocket_start(
                         account_id=account_id,
                         response=None,
                         auto_solve=True,
+                        trigger_scene="ws_connect",
+                        open_reason="WS 连接 auth_failed 后台恢复自动触发滑块求解",
+                        solve_reason="WS 连接失败后台恢复流程",
                     )
                     if captcha_result.get("recovered"):
                         logger.info(
@@ -2266,3 +2060,80 @@ async def image_upload_from_url(
             status_code=502,
             detail="远程图片获取或保存未完成，请检查地址后重试。",
         ) from exc
+
+# ---------------------------------------------------------------------------
+# Address Dictionary (省/市/区 三级联动)
+# ---------------------------------------------------------------------------
+# 数据源：本地 china_address_dict.json 文件，首次访问时加载并在内存中
+# 缓存 7 天。返回结构与商业版 china_address_dict 接口保持一致，便于前端
+# PublishAddressCascader 组件复用。
+
+_address_dict_cache: dict = {"tree": None, "expire_at": 0.0}
+_ADDRESS_DICT_TTL = 7 * 24 * 3600  # 7 天
+
+
+def _resolve_address_dict_path() -> Path:
+    configured_path = os.getenv("ADDRESS_DICT_PATH", "").strip()
+    candidates = []
+    if configured_path:
+        candidates.append(Path(configured_path).expanduser())
+    module_path = Path(__file__).resolve()
+    candidates.extend(
+        [
+            module_path.parents[3] / "data" / "china_address_dict.json",
+            Path("/app/app/data/china_address_dict.json"),
+            Path.cwd() / "app" / "data" / "china_address_dict.json",
+        ]
+    )
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.is_file():
+            return resolved
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"china_address_dict.json not found; searched: {searched}")
+
+
+def _load_address_dict_from_json() -> dict:
+    """从本地 JSON 文件加载行政区划数据。"""
+    json_path = _resolve_address_dict_path()
+    with json_path.open("r", encoding="utf-8") as f:
+        tree = json.load(f)
+    if not isinstance(tree, dict):
+        raise ValueError("china_address_dict.json must contain an object")
+    return tree
+
+
+@address_dict_router.get("/tree")
+async def address_dict_tree(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """返回全国省/市/区三级联动地址树，供发布商品页面选择商品位置使用。
+
+    数据源为本地 china_address_dict.json 文件，内存缓存 7 天。
+    """
+    del current_user, db
+    now = time.time()
+    if _address_dict_cache["tree"] is not None and _address_dict_cache["expire_at"] > now:
+        return ResultObject.success(_address_dict_cache["tree"])
+
+    try:
+        tree = _load_address_dict_from_json()
+        provinces_count = len(tree.get("provinces") or [])
+        if provinces_count == 0:
+            return ResultObject(
+                code=200,
+                msg="地址字典数据为空",
+                data={"provinces": [], "errorType": "address_dict_empty"},
+            )
+
+        _address_dict_cache["tree"] = tree
+        _address_dict_cache["expire_at"] = now + _ADDRESS_DICT_TTL
+        return ResultObject.success(tree)
+    except Exception as exc:
+        logger.error("address_dict: failed to load local JSON: %s", type(exc).__name__)
+        return ResultObject(
+            code=503,
+            msg="地址字典加载失败，请稍后重试",
+            data={"provinces": [], "errorType": "address_dict_load_failed"},
+        )

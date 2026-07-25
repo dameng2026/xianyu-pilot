@@ -461,6 +461,25 @@ class XianyuSysSetting(Base):
     updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class XianyuRemoteSliderSolveRecord(Base):
+    """远程滑块求解记录：调用商业版远程 API 的求解记录。"""
+    __tablename__ = "xianyu_remote_slider_solve_record"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    request_id = Column(String(64), nullable=False, unique=True)
+    account_id = Column(BigInteger, nullable=True)
+    account_name = Column(String(128), nullable=True)
+    trigger_scene = Column(String(32), nullable=False, default="manual")
+    status = Column(String(32), nullable=False, default="retrying")
+    failure_reason = Column(String(64), nullable=False, default="")
+    error_message = Column(Text, nullable=True)
+    duration_ms = Column(Integer, nullable=False, default=0)
+    token_charged = Column(Integer, nullable=False, default=0)
+    remote_status = Column(String(32), nullable=False, default="")
+    remote_solved = Column(SmallInteger, nullable=False, default=0)
+    client_ip = Column(String(64), nullable=False, default="")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
 class XianyuAiProvider(Base):
     __tablename__ = "xianyu_ai_provider"
     id = Column(Integer, primary_key=True, autoincrement=True)

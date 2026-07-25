@@ -61,7 +61,7 @@ export function createDefaultAboutContent() {
         d: '当前版本已完成固定账号密码登录、系统配置整合与付费广告商业桥边界；未配置的广告能力会明确显示为不可用。',
         sections: [
           { t: '登录与账号', d: '保留固定管理员账号密码登录模式，扫码登录仅用于闲鱼店铺授权，避免误连到外部旧环境。' },
-          { t: '系统配置', d: '通用模型、向量模型、RAG 知识库与高德地图配置已统一收敛到系统配置页。' },
+          { t: '系统配置', d: '通用模型、向量模型、RAG 知识库配置已统一收敛到系统配置页。' },
           { t: '广告商业桥', d: '开源版只通过服务端桥接接口处理付费广告申请、支付与展示，不暴露商业版数据库，也不让前端持有 bridge token。' },
         ],
         tags: ['固定账号登录', '系统配置整合', '付费广告桥', '广告合作'],
@@ -88,7 +88,7 @@ export function createDefaultAboutContent() {
       },
       {
         label: '系统配置',
-        desc: '统一管理通用模型、向量模型、RAG 知识库与高德地图配置。',
+        desc: '统一管理通用模型、向量模型、RAG 知识库配置。',
         icon: 'aboutSupportDoc',
         tone: 'green',
         actionType: 'route',

@@ -293,7 +293,6 @@ services:
       AI_PROVIDER_API_KEY_FILE: /run/secrets/ai_provider_api_key
       AI_PROVIDER_MODEL: ${AI_PROVIDER_MODEL:-gpt-4o-mini}
       AI_PROVIDER_TIMEOUT_SECONDS: ${AI_PROVIDER_TIMEOUT_SECONDS:-30}
-      AMAP_API_KEY_FILE: /run/secrets/amap_api_key
       XIANYU_MTOP_APP_KEY: ${XIANYU_MTOP_APP_KEY:-34839810}
     expose:
       - "12401"
@@ -345,11 +344,6 @@ services:
         mode: 0400
       - source: ai_provider_api_key
         target: ai_provider_api_key
-        uid: "10001"
-        gid: "10001"
-        mode: 0400
-      - source: amap_api_key
-        target: amap_api_key
         uid: "10001"
         gid: "10001"
         mode: 0400
@@ -483,5 +477,3 @@ secrets:
     file: ./secrets/embedding-api-key
   ai_provider_api_key:
     file: ./secrets/ai-provider-api-key
-  amap_api_key:
-    file: ./secrets/amap-api-key

@@ -823,7 +823,6 @@ sudo apt-get autoremove -y
 | `commercial-backend-access-token` | 商业版桥接令牌 | 可选（留空禁用） |
 | `embedding-api-key` | 嵌入模型 API Key | 可选（留空禁用） |
 | `ai-provider-api-key` | AI 大模型 API Key | 可选（留空禁用） |
-| `amap-api-key` | 高德地图 API Key | 可选（留空禁用） |
 
 ### 技术支持
 

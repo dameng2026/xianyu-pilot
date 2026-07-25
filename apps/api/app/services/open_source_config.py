@@ -15,7 +15,6 @@ from ..core.upload_security import (
 )
 from ..models.entities import ModelConfig, XianyuSysSetting
 from .sensitive_config import (
-    AMAP_API_KEY_PURPOSE,
     MODEL_CONFIG_API_KEY_PURPOSE,
     decrypt_runtime_secret,
     decrypt_system_config_secrets,
@@ -25,8 +24,6 @@ from .sensitive_config import (
 
 SYSTEM_CONFIG_SETTING_KEY = "open_source.system_config"
 CRAWLER_BASE_URL_SETTING_KEY = "crawler_base_url"
-AMAP_API_KEY_SETTING_KEY = "amap_api_key"
-
 logger = logging.getLogger(__name__)
 
 
@@ -74,11 +71,6 @@ def preserve_blank_secret_values(payload: Any, existing_config: Any) -> dict[str
     merged = _clone_config(payload)
     existing = _clone_config(existing_config)
 
-    if _as_bool(merged.get("clearAmapApiKey")):
-        merged["amapApiKey"] = ""
-    elif not _as_text(merged.get("amapApiKey")):
-        merged["amapApiKey"] = _as_text(existing.get("amapApiKey"))
-
     for section in ("generalModel", "embeddingModel"):
         incoming_section = merged.get(section)
         if not isinstance(incoming_section, dict):
@@ -104,10 +96,6 @@ def build_public_open_source_config(config: Any) -> dict[str, Any]:
     """Return configuration metadata without exposing credentials to the browser."""
     public = _clone_config(config)
 
-    amap_api_key = _as_text(public.get("amapApiKey"))
-    public["amapApiKey"] = ""
-    public["amapApiKeyConfigured"] = bool(amap_api_key)
-
     for section in ("generalModel", "embeddingModel"):
         values = public.get(section)
         if not isinstance(values, dict):
@@ -126,7 +114,6 @@ def default_open_source_config() -> dict[str, Any]:
         "icp": "",
         "logoUrl": "/xya/brand/brand_004.png",
         "crawlerBaseUrl": settings.crawler_base_url,
-        "amapApiKey": settings.amap_api_key,
         "generalModel": {
             "provider": "",
             "modelName": settings.ai_provider_model,
@@ -169,7 +156,6 @@ def normalize_open_source_config(payload: Any) -> dict[str, Any]:
         "icp": _as_text(raw.get("icp")),
         "logoUrl": _as_text(raw.get("logoUrl")) or defaults["logoUrl"],
         "crawlerBaseUrl": _as_text(raw.get("crawlerBaseUrl")) or defaults["crawlerBaseUrl"],
-        "amapApiKey": _as_text(raw.get("amapApiKey")),
         "generalModel": {
             "provider": _as_text(general_payload.get("provider")),
             "modelName": canonical_model_name,
@@ -256,17 +242,10 @@ async def load_open_source_config(db: AsyncSession) -> dict[str, Any]:
         decrypt_system_config_secrets(_load_json(raw_value, {}))
     )
 
-    amap_api_key = await load_setting_value(db, AMAP_API_KEY_SETTING_KEY, "")
     # The crawler receives encrypted account credentials and is therefore a
     # deployment boundary, not a browser-writable preference. Ignore legacy
     # database values and always expose the endpoint actually used at runtime.
     config["crawlerBaseUrl"] = settings.crawler_base_url
-    if amap_api_key:
-        config["amapApiKey"] = decrypt_runtime_secret(
-            amap_api_key,
-            purpose=AMAP_API_KEY_PURPOSE,
-        )
-
     general_model = await _load_model_config_fallback(db, ("general", "chat"))
     if general_model:
         if not config["generalModel"]["provider"]:
@@ -355,15 +334,6 @@ async def save_open_source_config(db: AsyncSession, payload: Any) -> dict[str, A
         db,
         CRAWLER_BASE_URL_SETTING_KEY,
         settings.crawler_base_url,
-    )
-    await save_setting_value(
-        db,
-        AMAP_API_KEY_SETTING_KEY,
-        prepare_secret_for_storage(
-            incoming=config["amapApiKey"],
-            purpose=AMAP_API_KEY_PURPOSE,
-        )
-        or "",
     )
     return config
 

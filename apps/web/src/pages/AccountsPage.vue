@@ -8,6 +8,7 @@
       <div v-if="error" class="global-notice error">{{ error }}</div>
       <div v-if="accountListWarning" class="global-notice warning" role="status">{{ accountListWarning }}</div>
       <div v-if="qrSuccessMsg" class="global-notice success">{{ qrSuccessMsg }}</div>
+      <div v-if="captchaErrorMsg" class="global-notice error">{{ captchaErrorMsg }}</div>
       <div class="grid stat-grid" style="grid-template-columns:repeat(5,1fr)">
         <StatCard title="账号总数" :value="accountMetric(stats.total)" change="全部记录" icon="users" />
         <StatCard title="正常账号" :value="accountMetric(stats.normal)" change="当前页" icon="account" color="green" />
@@ -43,6 +44,7 @@
             <button class="link" @click="selectAccount(row.raw)">详情</button>
             <button class="link" @click="refreshProfile(row.raw.id)">刷新资料</button>
             <button class="link" @click="openRescanModal(row.raw)">重新扫码</button>
+            <button class="link" :disabled="isAccountSolving(row.raw.id)" @click="solveCaptcha(row.raw)">{{ isAccountSolving(row.raw.id) ? '求解中' : '滑块求解' }}</button>
             <button class="link" :disabled="isWsBusy(row.raw.id) || row.wsConnected == null || row.wsPending" @click="toggleWs(row.raw)">{{ isWsBusy(row.raw.id) ? '确认中...' : (row.wsPending ? '启动中' : (row.wsConnected === true ? '断开' : (row.wsConnected === false ? '连接' : '状态未知'))) }}</button>
             <button class="link danger-text" @click="removeAccount(row.raw.id)">删除</button>
           </template>
@@ -243,6 +245,14 @@
         >
           <span>ⓘ</span>
           登录验证
+        </button>
+        <button
+          type="button"
+          :disabled="captchaSolving || isAccountSolving(selected.id)"
+          @click="solveCaptcha(selected)"
+        >
+          <span>{{ (captchaSolving || isAccountSolving(selected.id)) ? '⏳' : '🧩' }}</span>
+          {{ (captchaSolving || isAccountSolving(selected.id)) ? '求解中' : '滑块求解' }}
         </button>
         <button
           type="button"
@@ -587,6 +597,7 @@ import StatCard from '../components/StatCard.vue'; import CardPanel from '../com
 import { checkAccountAuth, deleteAccount, getAccounts, createAccountByCookie, refreshAccountProfile, updateAccountCookie, getAccountAutoRateConfig, saveAccountAutoRateConfig, getAccountStrategyConfig, saveAccountStrategyConfig } from '../api/accounts.js'
 import { startWebSocket, stopWebSocket, websocketStatus } from '../api/websocket.js'
 import { useDebouncedRef } from '../composables/useDebouncedRef.js'
+import { useCaptchaSolver } from '../composables/useCaptchaSolver.js'
 const emit = defineEmits(['navigate'])
 import { generateQrLogin, getQrLoginStatus, cleanupQrLogin } from '../api/qrlogin.js'
 import { accountName } from '../utils/format.js'
@@ -594,7 +605,9 @@ import { accountAuthState, accountCookieBadgeType, accountCookieLabel, accountCo
 import { extractKeyFields, maskKeyFields, validateCookie, checkIdentity, maskValue } from '../utils/cookie.js'
 import { confirmAction } from '../utils/confirmAction.js'
 import { createLatestRequestGuard, listRefreshRequestConfig } from '../utils/latestRequest.js'
+import { friendlyError } from '../utils/friendlyError.js'
 
+const { solveManually, isAccountSolving, getAccountSolveStatus } = useCaptchaSolver()
 const modal = ref('')
 const manual = reactive({ accountNote:'', cookie:'' })
 const manualError = ref('')
@@ -627,6 +640,7 @@ const qr = reactive({ loading:false, sessionId:'', qrUrl:'', status:'', message:
 const qrReady = computed(() => Boolean(qr.sessionId && qr.qrUrl))
 const qrGenerationFailed = computed(() => qr.status === 'error')
 const qrSuccessMsg = ref('')
+const captchaErrorMsg = ref('')
 const cookieEdit = reactive({ accountId: null, cookie: '' })
 const cookieEditError = ref('')
 const cookieEditSubmitting = ref(false)
@@ -652,6 +666,9 @@ const unifiedConfigError = ref('')
 const unifiedConfigSuccess = ref('')
 const unifiedConfigTaskText = ref('')
 const pendingDeleteId = ref(null)     // 待删除的账号ID
+
+const captchaSolving = ref(false)
+const captchaMessage = ref('')
 
 // Cookie 编辑弹窗 - 实时解析预览
 const cookieEditParsed = computed(() => {
@@ -904,6 +921,41 @@ async function openStrategyModal(account = selected.value) {
     strategyLoaded.value = true
   } catch (e) {
     strategyError.value = e.message || '加载账号策略配置失败'
+  }
+}
+
+async function solveCaptcha(account = selected.value) {
+  if (!account?.id) return
+  if (captchaSolving.value) return
+  captchaSolving.value = true
+  captchaMessage.value = ''
+  captchaErrorMsg.value = ''
+  try {
+    const result = await solveManually(account.id, 'manual_retry', {
+      openReason: '账号页面手动触发滑块求解',
+      solveReason: '用户在账号详情页点击滑块求解按钮',
+      // 前台手动求解：弹出 Chrome 窗口便于人工观察滑块过程
+      // 注意：crawler 容器 CRAWLER_FORCE_HEADLESS=true 会强制覆盖为无头
+      headless: false,
+    })
+    // 优先用 errorCode 映射友好提示（约束7），兜底用后端 error 文案
+    const displayMessage = friendlyError(result.errorCode || result.message, result.message)
+    captchaMessage.value = displayMessage
+    if (result.success) {
+      qrSuccessMsg.value = displayMessage
+      setTimeout(() => { if (qrSuccessMsg.value === displayMessage) qrSuccessMsg.value = '' }, 6000)
+      await loadAccounts()
+    } else {
+      captchaErrorMsg.value = displayMessage
+      setTimeout(() => { if (captchaErrorMsg.value === displayMessage) captchaErrorMsg.value = '' }, 10000)
+    }
+  } catch (e) {
+    const friendlyMsg = friendlyError(e, '滑块求解请求失败，请稍后重试')
+    captchaMessage.value = friendlyMsg
+    captchaErrorMsg.value = friendlyMsg
+    setTimeout(() => { if (captchaErrorMsg.value === friendlyMsg) captchaErrorMsg.value = '' }, 10000)
+  } finally {
+    captchaSolving.value = false
   }
 }
 
@@ -1228,10 +1280,13 @@ async function checkSelectedAuth() {
   }
 }
 
-async function refreshProfile(accountId) {
+async function refreshProfile(accountId, options = {}) {
   try {
     error.value = ''
-    const res = await refreshAccountProfile(accountId)
+    // 扫码/SSE 自动触发时标记为 background，避免闲鱼 API 响应慢导致
+    // 全局"正在同步数据..."横幅遮挡页面；手动点击仍为 foreground。
+    const requestConfig = options.background ? { uiMode: 'background', suppressGlobalError: true } : {}
+    const res = await refreshAccountProfile(accountId, requestConfig)
     const data = res.data?.account || res.data || res
     // 刷新成功后的提示
     const displayName = data.displayName || data.nickname || ''
@@ -1437,9 +1492,17 @@ async function startQrLogin() {
 
 function startQrPolling() {
   stopQrPolling()
-  qrTimer = setInterval(checkQrStatus, 2000)
+  // 使用 setTimeout 链式轮询代替 setInterval，确保前一次请求返回后再发起下一次。
+  // 避免闲鱼 API 响应慢时请求堆积，耗尽数据库连接池。
+  qrTimer = setTimeout(scheduleQrPoll, 2000)
 }
-function stopQrPolling() { if (qrTimer) { clearInterval(qrTimer); qrTimer = null } }
+function stopQrPolling() { if (qrTimer) { clearTimeout(qrTimer); qrTimer = null } }
+async function scheduleQrPoll() {
+  await checkQrStatus()
+  // checkQrStatus 内部可能调用 stopQrPolling（confirmed/error/expired），
+  // 只有轮询仍在进行时才安排下一次。
+  if (qrTimer) qrTimer = setTimeout(scheduleQrPoll, 2000)
+}
 async function checkQrStatus() {
   if (!qr.sessionId) return
   try {
@@ -1476,8 +1539,8 @@ async function checkQrStatus() {
             if (target) {
               selectAccount(target)
             }
-            // 扫码成功后自动刷新账号资料
-            refreshProfile(nextAccountId).catch(() => {
+            // 扫码成功后自动刷新账号资料（background，避免闲鱼 API 慢时全局 loading 遮挡页面）
+            refreshProfile(nextAccountId, { background: true }).catch(() => {
               if (import.meta.env.DEV) console.warn('自动刷新资料失败')
             })
           }
@@ -1519,8 +1582,8 @@ async function handleSseEvent(e) {
         if (target) {
           selectAccount(target)
         }
-        // 自动刷新账号资料
-        refreshProfile(addedAccountId).catch(() => {
+        // 自动刷新账号资料（background，避免闲鱼 API 慢时全局 loading 遮挡页面）
+        refreshProfile(addedAccountId, { background: true }).catch(() => {
           if (import.meta.env.DEV) console.warn('自动刷新资料失败')
         })
       } else if (accounts.value[0]) {
@@ -1534,24 +1597,30 @@ async function handleSseEvent(e) {
     // 从服务端重新拉取账号列表，确保 cookie 状态与后端一致
     const targetId = event.accountId
     const newStatus = event.cookieStatus
+    // 优先使用后端返回的真实状态码与消息，避免前端硬编码误判（如滑块求解失败
+    // 但 Cookie 实际正常的场景，后端会返回 status_message 说明真实原因）
+    const backendCode = event.loginStatusCode || ''
+    const backendMessage = event.loginStatusMessage || ''
     // 先更新本地缓存，避免列表闪现旧状态
     const account = accounts.value.find(a => a.id === targetId)
     if (account) {
       account.cookieStatus = newStatus
       account.authUsable = Number(newStatus) === 1
-      account.loginStatusCode = Number(newStatus) === 1 ? 'OK' : 'COOKIE_EXPIRED'
-      account.loginStatusMessage = Number(newStatus) === 1 ? '账号登录状态正常' : 'Cookie 已失效，请重新登录闲鱼账号'
+      account.loginStatusCode = backendCode || (Number(newStatus) === 1 ? 'OK' : 'COOKIE_EXPIRED')
+      account.loginStatusMessage = backendMessage || (Number(newStatus) === 1 ? '账号登录状态正常' : 'Cookie 已失效，请重新登录闲鱼账号')
       if (selected.value && selected.value.id === targetId) {
         selected.value.cookieStatus = newStatus
         selected.value.authUsable = Number(newStatus) === 1
-        selected.value.loginStatusCode = Number(newStatus) === 1 ? 'OK' : 'COOKIE_EXPIRED'
-        selected.value.loginStatusMessage = Number(newStatus) === 1 ? '账号登录状态正常' : 'Cookie 已失效，请重新登录闲鱼账号'
+        selected.value.loginStatusCode = backendCode || (Number(newStatus) === 1 ? 'OK' : 'COOKIE_EXPIRED')
+        selected.value.loginStatusMessage = backendMessage || (Number(newStatus) === 1 ? '账号登录状态正常' : 'Cookie 已失效，请重新登录闲鱼账号')
       }
     }
-    // 显示提示信息
+    // 显示提示信息：仅当 Cookie 真正失效时提示，且使用后端返回的真实消息
+    // （避免滑块求解失败但 Cookie 正常时弹出误导性"已失效"提示）
     if (newStatus === 0) {
-      qrSuccessMsg.value = `账号 ${targetId} Cookie 已失效（可能遇到滑块验证），请更换 Cookie 或重新扫码登录`
-      setTimeout(() => { if (qrSuccessMsg.value && qrSuccessMsg.value.includes('Cookie 已失效')) qrSuccessMsg.value = '' }, 8000)
+      const hint = backendMessage || `账号 ${targetId} Cookie 已失效，请更换 Cookie 或重新扫码登录`
+      qrSuccessMsg.value = hint
+      setTimeout(() => { if (qrSuccessMsg.value === hint) qrSuccessMsg.value = '' }, 8000)
     }
     // 从服务端重新拉取，确保数据同步
     loadAccounts()

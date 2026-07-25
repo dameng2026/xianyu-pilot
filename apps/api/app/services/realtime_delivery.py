@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +56,10 @@ def build_realtime_delivery_event_key(
         raise ValueError("account id is required for realtime delivery")
     normalized_order = str(external_order_id or "").strip()
     normalized_event = str(source_event_id or "").strip()
-    normalized_session = str(session_id or "").strip()
+    # 归一化 @goofish 后缀：闲鱼 WS 推送的同一会话消息可能带或不带 @goofish 后缀
+    # （如 64799897685 vs 64799897685@goofish），若不归一化会导致同一订单生成不同
+    # event_key，破坏幂等性，造成重复发货（事故级 Bug）。
+    normalized_session = str(session_id or "").strip().removesuffix("@goofish")
     normalized_item = str(item_id or "").strip()
     if not normalized_session or not normalized_item:
         raise ValueError("session and item are required for realtime delivery")
@@ -542,6 +545,7 @@ class SqlRealtimeDeliveryStore:
                 card.used_time = card.used_time or now
                 card.claim_token = None
                 card.updated_time = now
+            await self._sync_card_group_stats(attempt.card_group_id)
 
         now = _now()
         attempt.state = "message_sent"
@@ -627,6 +631,7 @@ class SqlRealtimeDeliveryStore:
                 card.claim_token = None
                 card.used_time = None
                 card.updated_time = _now()
+            await self._sync_card_group_stats(attempt.card_group_id)
 
         attempt.state = "failed"
         attempt.retry_scope = "message" if result.retry_safe else None
@@ -643,6 +648,42 @@ class SqlRealtimeDeliveryStore:
         await self._update_delivery_record(attempt, "failed", attempt.error_message)
         await self._db.commit()
         return self._lease(attempt, action="return")
+
+    async def _sync_card_group_stats(self, card_group_id: int | None) -> None:
+        """Recalculate card_group statistics after card status changes.
+
+        Keeps total_count/used_count/available_count consistent with the
+        actual card_item rows, preventing inventory drift caused by crashes
+        or orphaned claims.
+        """
+        if not card_group_id:
+            return
+        await self._db.execute(
+            text(
+                """
+                UPDATE card_group cg
+                SET cg.total_count = (
+                        SELECT COUNT(*) FROM card_item ci
+                        WHERE ci.group_id = cg.id AND ci.deleted = 0
+                    ),
+                    cg.used_count = (
+                        SELECT COUNT(*) FROM card_item ci
+                        WHERE ci.group_id = cg.id AND ci.deleted = 0
+                          AND ci.status = 2
+                    ),
+                    cg.available_count = (
+                        SELECT COUNT(*) FROM card_item ci
+                        WHERE ci.group_id = cg.id AND ci.deleted = 0
+                          AND ci.status = 0
+                          AND ci.is_used = 0
+                          AND (ci.expire_time IS NULL OR ci.expire_time > NOW())
+                    ),
+                    cg.updated_time = NOW()
+                WHERE cg.id = :gid
+                """
+            ),
+            {"gid": int(card_group_id)},
+        )
 
     async def _locked_attempt(
         self,
@@ -859,6 +900,69 @@ class SqlRealtimeDeliveryStore:
             message_confirmed=attempt.message_confirmed_at is not None,
             platform_confirmed=attempt.platform_confirmed_at is not None,
         )
+
+
+async def heal_orphaned_card_claims(db: AsyncSession) -> int:
+    """Recover orphaned card claims left by crashed or stuck delivery attempts.
+
+    Cards with status=1 (claimed) linked to attempts that have reached a
+    terminal state (success/failed/unknown) are reset to status=0 (available)
+    so they can be reused. This prevents inventory leakage when the process
+    dies between claiming a card and finalizing the attempt.
+
+    Returns the number of cards healed.
+    """
+    result = await db.execute(
+        text(
+            """
+            UPDATE card_item ci
+            INNER JOIN realtime_delivery_attempt rda
+              ON rda.id = ci.realtime_attempt_id
+            SET ci.status = 0,
+                ci.realtime_attempt_id = NULL,
+                ci.claim_token = NULL,
+                ci.used_time = NULL,
+                ci.updated_time = NOW()
+            WHERE ci.deleted = 0
+              AND ci.status = 1
+              AND rda.state IN ('success', 'failed', 'unknown')
+            """
+        )
+    )
+    healed = result.rowcount or 0
+    if healed > 0:
+        # Refresh statistics for affected card groups
+        await db.execute(
+            text(
+                """
+                UPDATE card_group cg
+                SET cg.total_count = (
+                        SELECT COUNT(*) FROM card_item ci
+                        WHERE ci.group_id = cg.id AND ci.deleted = 0
+                    ),
+                    cg.used_count = (
+                        SELECT COUNT(*) FROM card_item ci
+                        WHERE ci.group_id = cg.id AND ci.deleted = 0
+                          AND ci.status = 2
+                    ),
+                    cg.available_count = (
+                        SELECT COUNT(*) FROM card_item ci
+                        WHERE ci.group_id = cg.id AND ci.deleted = 0
+                          AND ci.status = 0
+                          AND ci.is_used = 0
+                          AND (ci.expire_time IS NULL OR ci.expire_time > NOW())
+                    ),
+                    cg.updated_time = NOW()
+                WHERE cg.id IN (
+                    SELECT DISTINCT ci2.group_id FROM card_item ci2
+                    WHERE ci2.deleted = 0 AND ci2.status = 1
+                )
+                """
+            )
+        )
+        logger.info("healed orphaned card claims count=%d", healed)
+    await db.commit()
+    return healed
 
 
 class XianyuRealtimeDeliveryGateway:

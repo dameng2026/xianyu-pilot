@@ -54,9 +54,9 @@ MESSAGE_TIMEOUT = 10  # 发送消息超时（秒）
 IMAGE_MESSAGE_ACK_TIMEOUT = 10  # 图片 ACK 可能延迟，与文本消息保持一致的超时窗口
 
 
-# 自动滑块求解去重表：account_id -> 上次自动求解的时间戳（秒）
-# 同账号 10 分钟内只自动求解一次，避免断线重连循环反复启动浏览器
-_AUTO_SOLVE_LAST_TS: dict[int, float] = {}
+# 自动滑块求解去重状态已迁移至 captcha_solver 模块（should_auto_solve / mark_auto_solve_started），
+# 由 ws_client / cookie_token_refresher 等多个触发源共享，避免同账号并发求解。
+from .captcha_solver import should_auto_solve as _should_auto_solve, mark_auto_solve_started as _mark_auto_solve_started  # noqa: E402
 
 
 async def _lookup_account_name_safe(account_id: int) -> str:
@@ -1118,18 +1118,17 @@ class XianyuWebSocketClient:
         避免断线重连循环反复启动浏览器。
 
         Args:
-            scene: 触发场景，"captcha" 表示滑块验证，"expired" 表示 Session 过期
+            scene: 触发场景，"captcha" 表示滑块验证，"expired" 表示 Session 过期，
+                   "heartbeat_stop" 表示心跳停跳触发的主动求解
         """
-        # === 去重：同账号 10 分钟内只自动求解一次 ===
-        now_ts = time.time()
-        last_solve_ts = _AUTO_SOLVE_LAST_TS.get(self.account_id, 0)
-        if now_ts - last_solve_ts < 600:
+        # === 去重：同账号 10 分钟内只自动求解一次（跨模块共享） ===
+        if not _should_auto_solve(self.account_id):
             logger.info(
-                "账号 %d 自动滑块求解去重跳过（%d 秒前刚执行过，间隔需 >= 600 秒）scene=%s",
-                self.account_id, int(now_ts - last_solve_ts), scene,
+                "账号 %d 自动滑块求解去重跳过（10 分钟内已执行过）scene=%s",
+                self.account_id, scene,
             )
             return
-        _AUTO_SOLVE_LAST_TS[self.account_id] = now_ts
+        _mark_auto_solve_started(self.account_id)
 
         logger.info(
             "WS Token 失败后自动触发滑块求解 accountId=%d scene=%s",
@@ -1137,9 +1136,22 @@ class XianyuWebSocketClient:
         )
         try:
             from .captcha_solver import handle_captcha_for_account
+            # 关键：必须传非 manual 的 trigger_scene（而非默认的 "manual"）。
+            # handle_captcha_for_account 内部对 manual/manual_retry 场景会跳过
+            # Token API 二次验证（因为手动场景下用户刚扫码，Cookie 是新鲜的，
+            # 但 _m_h5_tk 可能尚未生成，Token API 会误判过期）。
+            # 而 WS 自动触发场景下 Cookie 是已有的、刚刚撞过滑块的，必须通过
+            # Token API 二次验证确认 Cookie 真实可用，才能正确持久化 WS 状态
+            # （cookie_status / login_status_code），避免 Session 真过期时
+            # 错误恢复 cookie_status=1 导致 WS 反复重连失败。
+            # heartbeat_stop 使用独立 trigger_scene 以便求解记录区分来源。
+            trigger_scene = "heartbeat_stop" if scene == "heartbeat_stop" else "ws_connect"
             result = await handle_captcha_for_account(
                 account_id=self.account_id, response=None,
                 auto_solve=True,
+                trigger_scene=trigger_scene,
+                open_reason=f"WS Token 获取失败（scene={scene}）自动触发滑块求解",
+                solve_reason=f"WS 自动重连流程触发（{scene}）",
             )
             recovered = bool(result.get("recovered"))
             auto_solve_result = result.get("autoSolveResult") or {}
@@ -1373,6 +1385,29 @@ class XianyuWebSocketClient:
                         "主动关闭连接以触发重连",
                         self.account_id, idle_secs,
                     )
+                    # 如果用户启用了"心跳停跳"触发场景，在关闭连接前
+                    # 后台发起自动滑块求解（不阻塞重连流程）。
+                    # 求解器内部会通过 Token API 二次验证判断是否真需要求解，
+                    # 若 Token API 正常则不会实际发起求解。
+                    try:
+                        from .remote_slider_config import (
+                            TRIGGER_SCENE_HEARTBEAT_STOP,
+                            is_trigger_scene_enabled,
+                        )
+                        if await is_trigger_scene_enabled(TRIGGER_SCENE_HEARTBEAT_STOP):
+                            logger.info(
+                                "心跳停跳触发自动滑块求解 accountId=%d idle=%.0fs",
+                                self.account_id, idle_secs,
+                            )
+                            spawn_background_task(
+                                self._auto_solve_captcha_after_failure(scene="heartbeat_stop"),
+                                name=f"ws.heartbeat-auto-solve:{self.account_id}",
+                            )
+                    except Exception as exc:
+                        logger.debug(
+                            "心跳停跳触发场景检查异常 errorType=%s",
+                            type(exc).__name__,
+                        )
                     # 必须关闭 WS，否则 _message_loop 会阻塞在 ws.recv() 上，
                     # _connect 的 finally 块不会执行，_connected 保持 True，
                     # 后续消息会发送到死连接上导致超时。

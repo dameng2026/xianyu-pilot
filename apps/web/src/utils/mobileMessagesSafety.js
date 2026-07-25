@@ -1,8 +1,8 @@
 function stableMessageKey(message) {
   const pnmId = String(message?.pnmId || message?.messageUid || message?.uuid || '').trim()
-  if (pnmId) return `pnm:${pnmId}`
+  if (pnmId) return pnmId
   const id = String(message?.id || '').trim()
-  if (id) return `id:${id}`
+  if (id) return id
   return ''
 }
 

@@ -635,6 +635,9 @@ async def proxy_get_about_content() -> dict[str, Any]:
         data = await _request_bridge(config, "GET", "/about")
         if isinstance(data, dict) and data:
             _rewrite_community_card_image_urls(data, config["baseUrl"])
+            changelog_logs = parse_changelog_to_logs()
+            if changelog_logs:
+                data["logs"] = changelog_logs
             data["bridgeEnabled"] = True
             return data
     except CommercialBridgeError as exc:

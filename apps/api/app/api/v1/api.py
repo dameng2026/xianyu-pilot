@@ -91,7 +91,7 @@ api_router.include_router(misc.qrlogin_router)
 api_router.include_router(misc.websocket_router)
 api_router.include_router(misc.media_router)
 api_router.include_router(misc.image_router)
-api_router.include_router(misc.amap_router)
+api_router.include_router(misc.address_dict_router)
 include_router_excluding(
     api_router,
     misc.excel_router,

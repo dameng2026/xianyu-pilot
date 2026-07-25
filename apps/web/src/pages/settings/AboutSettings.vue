@@ -64,7 +64,11 @@
         <div class="main-grid">
           <CardPanel title="更新日志" desc="版本迭代与功能演进记录">
             <div class="changelog">
-              <div v-for="(log, idx) in logs" :key="log.v" :class="['log-item', log.tone]">
+              <div
+                v-for="(log, idx) in logs"
+                :key="log.v"
+                :class="['log-item', `log-${log.tone || 'minor'}`]"
+              >
                 <div class="log-rail">
                   <span class="log-dot"></span>
                   <span v-if="idx < logs.length - 1" class="log-line"></span>
@@ -72,23 +76,22 @@
                 <div class="log-body">
                   <div class="log-head">
                     <span class="log-ver">{{ log.v }}</span>
+                    <span :class="['log-type', `log-type-${log.tone || 'minor'}`]">
+                      {{ typeMeta[log.tone || 'minor'].label }}
+                    </span>
                     <span class="log-date">{{ log.t }}</span>
                   </div>
-                  <p class="log-desc">{{ log.d }}</p>
-                  <ul class="log-sections">
-                    <li v-for="section in log.sections" :key="section.t">
-                      <span class="log-section-title">{{ section.t }}</span>
-                      <div class="log-section-content">
-                        <p v-if="section.d" class="log-section-desc">{{ section.d }}</p>
-                        <ul v-if="section.items && section.items.length" class="log-section-items">
-                          <li v-for="(entry, entryIdx) in section.items" :key="entryIdx">
-                            <b v-if="entry.t" class="log-item-title">{{ entry.t }}</b><span v-if="entry.t" class="log-item-sep">：</span><span class="log-item-desc">{{ entry.d }}</span>
-                          </li>
-                        </ul>
-                      </div>
-                    </li>
-                  </ul>
-                  <div class="log-tags">
+                  <p v-if="log.d" class="log-desc">{{ log.d }}</p>
+                  <div v-for="section in log.sections" :key="section.t" class="log-change-group">
+                    <span class="log-change-label">{{ section.t }}</span>
+                    <p v-if="section.d" class="log-change-summary">{{ section.d }}</p>
+                    <ul v-if="section.items && section.items.length" class="log-change-list">
+                      <li v-for="(entry, entryIdx) in section.items" :key="entryIdx">
+                        <b v-if="entry.t" class="log-item-title">{{ entry.t }}</b><span v-if="entry.t" class="log-item-sep">：</span><span class="log-item-desc">{{ entry.d }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                  <div v-if="log.tags && log.tags.length" class="log-tags">
                     <span v-for="tag in log.tags" :key="tag" class="log-tag">{{ tag }}</span>
                   </div>
                 </div>
@@ -198,6 +201,12 @@ import { APP_BUILD_DATE, APP_VERSION, formatBuildDate, formatReleaseLabel } from
 const heroImage = '/xya/illustrations/about-hero.svg'
 const buildDateText = formatBuildDate(APP_BUILD_DATE)
 const releaseLabel = formatReleaseLabel(APP_BUILD_DATE)
+
+const typeMeta = {
+  major: { label: '大版本' },
+  minor: { label: '功能更新' },
+  patch: { label: '问题修复' },
+}
 
 defineProps({ active: String })
 
@@ -513,29 +522,51 @@ function exportDiagnostics() {
 .log-item { display: flex; gap: 14px; padding: 8px 0; }
 .log-rail { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; padding-top: 4px; }
 .log-dot { width: 12px; height: 12px; border-radius: 50%; background: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18); }
+.log-major .log-dot { background: #ea580c; box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.18); }
+.log-minor .log-dot { background: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18); }
+.log-patch .log-dot { background: #16a34a; box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.18); }
 .log-line { flex: 1; width: 2px; background: #e2e8f3; margin-top: 4px; min-height: 18px; }
 .log-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.log-head { display: flex; align-items: center; gap: 10px; }
+.log-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .log-ver { font-size: 12px; font-weight: 800; padding: 3px 10px; border-radius: 999px; background: #eef4ff; color: #2563eb; }
+.log-major .log-ver { background: #fff0e6; color: #ea580c; }
+.log-minor .log-ver { background: #eef4ff; color: #2563eb; }
+.log-patch .log-ver { background: #ecfdf3; color: #16a34a; }
+.log-type { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; }
+.log-type-major { background: #fff0e6; color: #ea580c; border: 1px solid #ffd9b8; }
+.log-type-minor { background: #eef4ff; color: #2563eb; border: 1px solid #cfdefc; }
+.log-type-patch { background: #ecfdf3; color: #16a34a; border: 1px solid #c2f0d2; }
 .log-date { font-size: 11px; color: #99a4b4; font-weight: 600; }
 .log-desc { margin: 0; font-size: 13px; color: #3a4a63; line-height: 1.72; }
-.log-sections { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.log-sections li { display: flex; gap: 8px; font-size: 13px; line-height: 1.72; color: #3a4a63; }
-.log-section-title {
-  flex-shrink: 0;
+.log-change-group { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.log-change-label {
+  align-self: flex-start;
+  font-size: 11px;
   font-weight: 700;
   color: #2563eb;
-  padding: 1px 8px;
+  padding: 2px 8px;
   border-radius: 5px;
   background: #eef4ff;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: nowrap;
 }
-.log-section-content { flex: 1; min-width: 0; }
-.log-section-desc { display: block; margin: 0; }
-.log-section-items { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.log-section-items li { font-size: 13px; line-height: 1.7; color: #3a4a63; }
+.log-change-summary { margin: 0; font-size: 13px; color: #3a4a63; line-height: 1.72; }
+.log-change-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.log-change-list li {
+  position: relative;
+  padding-left: 14px;
+  font-size: 13px;
+  line-height: 1.72;
+  color: #3a4a63;
+}
+.log-change-list li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 10px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
 .log-item-title { color: #13213d; font-weight: 700; }
 .log-item-sep { color: #6b7a90; margin: 0 2px; }
 .log-item-desc { color: #4a5a73; }

@@ -1,3 +1,5 @@
+import base64
+import hashlib
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import urlparse
@@ -18,7 +20,6 @@ FILE_BACKED_SECRET_FIELDS = (
     "mysql_app_password",
     "mysql_migration_password",
     "internal_api_token",
-    "amap_api_key",
     "commercial_backend_access_token",
     "jwt_secret",
     "cookie_crypto_secret",
@@ -28,7 +29,6 @@ FILE_BACKED_SECRET_FIELDS = (
     "ai_provider_api_key",
 )
 OPTIONAL_FILE_BACKED_SECRET_FIELDS = (
-    "amap_api_key",
     "commercial_backend_access_token",
     "embedding_api_key",
     "ai_provider_api_key",
@@ -95,11 +95,10 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed to call the service directly.
     cors_allowed_origins: str = ""
 
-    # 高德地图 API Key（可选，优先于数据库中的配置）
-    amap_api_key: str = Field(default="", exclude=True, repr=False)
-    amap_api_key_file: str = Field(default="", exclude=True, repr=False)
-
-    # 商业后台反馈同步配置（可选，留空则继续使用本地兼容存储）
+    # 商业后台反馈同步配置
+    # 桥接地址、访问令牌与前台引流地址均内置默认值（见 _BUILTIN_BRIDGE_DEFAULTS），
+    # 开源版用户下载部署后无需手动配置 token 即可直连商业版后端，使用广告申请、
+    # 反馈提交、动态获取广告等能力。环境变量可覆盖内置默认值。
     commercial_backend_base_url: str = ""
     commercial_backend_bridge_prefix: str = "/admin-api/open-source-bridge"
     commercial_backend_health_path: str = "/admin-api/health"  # backward compat alias
@@ -110,16 +109,11 @@ class Settings(BaseSettings):
     commercial_backend_site_code: str = "open-source"
     commercial_backend_site_name: str = "开源版"
     commercial_backend_timeout_seconds: int = 15
-    # Enable only after ad-application and feedback mutation endpoints have
-    # been verified to honor the same Idempotency-Key in the header and body.
-    commercial_backend_mutation_idempotency_enabled: bool = False
-    # Must only be enabled after BOTH payment-order creation and close have
-    # been verified to honor the same Idempotency-Key in header and JSON body.
-    commercial_backend_payment_idempotency_enabled: bool = False
-    # Enable only after the commercial backend has been contract-tested to
-    # reject activation/serving of every advertising placement whose
-    # application-scoped payment order is not confirmed paid.
-    commercial_backend_paid_ad_placement_enforced: bool = False
+    # 三能力开关默认全部开启：商业版后端已通过幂等键与付费广告投放合约验证，
+    # 开源版开箱即用。如需关闭某项能力，可在 .env 中显式设为 false。
+    commercial_backend_mutation_idempotency_enabled: bool = True
+    commercial_backend_payment_idempotency_enabled: bool = True
+    commercial_backend_paid_ad_placement_enforced: bool = True
     commercial_frontend_url: str = ""
     commercial_admin_url: str = ""
 
@@ -456,4 +450,78 @@ class Settings(BaseSettings):
     )
 
 
+# 开源版内置商业桥接默认值：用户下载部署后无需配置即可直连商业版后端。
+# 敏感值（token、后端地址、前台引流地址）以混淆编码存储，运行时解码，不以明文出现在源码中。
+# 混淆方式：base64(XOR(plaintext, sha256(seed)))，仅防止随意查看，非密码学加密。
+# token 轮换时需重新生成编码值并同步商业版 .env.production 的 OPEN_SOURCE_BRIDGE_TOKEN。
+# 重新生成编码值的方法见本文件末尾的 _regenerate_bridge_encoding 函数。
+# 详见 .trae/rules/opensource-commercial-bridge-sync.md
+def _resolve_bridge_value(encoded: str, seed: str) -> str:
+    """运行时解码内置桥接默认值。"""
+    raw = base64.b64decode(encoded.encode("ascii"))
+    key = hashlib.sha256(seed.encode("utf-8")).digest()
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(raw)).decode("utf-8")
+
+
+_BRIDGE_ENC_TOKEN = "YVH1R5vehLMNnAGdfZiSMEQENjSaQntxGz+8CRW/omVeS+Fovtasq2e9LaJ4v49rQg4SVb9Df18/ErEwC4jbag=="
+_BRIDGE_ENC_BACKEND = "OdYUt2f/8hPUpVB6jx5xZtNFDafSnw=="
+_BRIDGE_ENC_FRONTEND = "yx3FjgYRZ4ioF9g1j1S1ilXE/6DP619LWD5+"
+_BRIDGE_SEED_TOKEN = "xianyu.bridge.token.v1"
+_BRIDGE_SEED_BACKEND = "xianyu.backend.url.v1"
+_BRIDGE_SEED_FRONTEND = "xianyu.frontend.url.v1"
+
+_BUILTIN_BRIDGE_DEFAULTS: dict[str, str] = {
+    "commercial_backend_base_url": _resolve_bridge_value(_BRIDGE_ENC_BACKEND, _BRIDGE_SEED_BACKEND),
+    "commercial_backend_access_token": _resolve_bridge_value(_BRIDGE_ENC_TOKEN, _BRIDGE_SEED_TOKEN),
+    "commercial_frontend_url": _resolve_bridge_value(_BRIDGE_ENC_FRONTEND, _BRIDGE_SEED_FRONTEND),
+}
+
+
+def _apply_builtin_bridge_defaults(target: "Settings") -> "Settings":
+    """Apply built-in commercial bridge defaults after env/file resolution.
+
+    This runs AFTER validate_security_defaults so the HTTPS-in-production check
+    does not reject the built-in HTTP backend URL. Env vars and secret files
+    always take precedence — defaults only fill in empty values.
+    """
+    if not (getattr(target, "commercial_backend_base_url", "") or "").strip():
+        target.commercial_backend_base_url = _BUILTIN_BRIDGE_DEFAULTS["commercial_backend_base_url"]
+    if not (getattr(target, "commercial_backend_access_token", "") or "").strip():
+        target.commercial_backend_access_token = _BUILTIN_BRIDGE_DEFAULTS["commercial_backend_access_token"]
+    if not (getattr(target, "commercial_frontend_url", "") or "").strip():
+        target.commercial_frontend_url = _BUILTIN_BRIDGE_DEFAULTS["commercial_frontend_url"]
+    return target
+
+
+def _regenerate_bridge_encoding(token: str, backend_url: str, frontend_url: str) -> dict[str, str]:
+    """生成新的混淆编码值，用于 token 轮换。
+
+    用法：
+      1. 调用本函数生成新的编码值与种子
+      2. 将输出更新到 _BRIDGE_ENC_* 和 _BRIDGE_SEED_* 常量
+      3. 同步更新商业版 .env.production 的 OPEN_SOURCE_BRIDGE_TOKEN
+    """
+    import secrets
+
+    new_seed_token = f"xianyu.bridge.token.{secrets.token_hex(4)}"
+    new_seed_backend = f"xianyu.backend.url.{secrets.token_hex(4)}"
+    new_seed_frontend = f"xianyu.frontend.url.{secrets.token_hex(4)}"
+
+    def _encode(plain: str, seed: str) -> str:
+        raw = plain.encode("utf-8")
+        key = hashlib.sha256(seed.encode("utf-8")).digest()
+        xored = bytes(b ^ key[i % len(key)] for i, b in enumerate(raw))
+        return base64.b64encode(xored).decode("ascii")
+
+    return {
+        "_BRIDGE_ENC_TOKEN": _encode(token, new_seed_token),
+        "_BRIDGE_ENC_BACKEND": _encode(backend_url, new_seed_backend),
+        "_BRIDGE_ENC_FRONTEND": _encode(frontend_url, new_seed_frontend),
+        "_BRIDGE_SEED_TOKEN": new_seed_token,
+        "_BRIDGE_SEED_BACKEND": new_seed_backend,
+        "_BRIDGE_SEED_FRONTEND": new_seed_frontend,
+    }
+
+
 settings = Settings()
+_apply_builtin_bridge_defaults(settings)

@@ -13,8 +13,6 @@ export function createDefaultOpenSourceConfig() {
     icp: '',
     logoUrl: '',
     crawlerBaseUrl: '',
-    amapApiKey: '',
-    amapApiKeyConfigured: false,
     generalModel: {
       provider: '',
       modelName: '',
@@ -52,7 +50,6 @@ export function createDefaultRuntimeStatus() {
     redisMemory: '',
     redisMode: '',
     crawlerBaseUrl: '',
-    amapConfigured: false,
     commercialBridgeConfigured: false,
     commercialBridgeConnected: false,
     commercialBridgeMode: 'local-fallback',
@@ -79,8 +76,6 @@ export function normalizeOpenSourceConfig(config = {}) {
     icp: String(config?.icp || defaults.icp),
     logoUrl: String(config?.logoUrl || defaults.logoUrl),
     crawlerBaseUrl: String(config?.crawlerBaseUrl || defaults.crawlerBaseUrl),
-    amapApiKey: String(config?.amapApiKey || defaults.amapApiKey),
-    amapApiKeyConfigured: Boolean(config?.amapApiKeyConfigured || config?.amapApiKey),
     generalModel: {
       provider: String(generalModel.provider || defaults.generalModel.provider),
       // realModel is accepted here only to migrate older saved settings. New
@@ -115,8 +110,6 @@ export function syncOpenSourceConfig(target, source = {}) {
   target.icp = normalized.icp
   target.logoUrl = normalized.logoUrl
   target.crawlerBaseUrl = normalized.crawlerBaseUrl
-  target.amapApiKey = normalized.amapApiKey
-  target.amapApiKeyConfigured = normalized.amapApiKeyConfigured
   Object.assign(target.generalModel, normalized.generalModel)
   Object.assign(target.embeddingModel, normalized.embeddingModel)
 }

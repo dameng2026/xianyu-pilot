@@ -978,13 +978,13 @@ def validate_parsed_message(msg: dict) -> dict:
             violations.append("all_ids_empty")
 
     # 校验5: pnm_id 为空时，用稳定 hash 作为备用消息 UID。
-    # messageTime 常为 0，因此 hash 中同时纳入 contentType / reminderContent，降低重复折叠概率。
+    # 注意：不包含 messageTime，否则同一消息在不同时间戳下会生成不同 hash，
+    # 导致本地持久化与 WS 回环的去重失败（messageTime 在本地为 0，在回环中为服务端时间）。
     if not pnm_id and msg_content:
         fallback_raw = "|".join([
             s_id,
             sender_user_id,
             receiver_user_id,
-            str(msg.get("messageTime") or "0"),
             str(content_type),
             msg_content,
             str(msg.get("reminderContent") or ""),

@@ -1,4 +1,4 @@
-﻿"""
+"""
 WebSocket 消息存储模块。
 
 将 WebSocket 收到的消息存储到 xianyu_chat_message 表，
@@ -1695,9 +1695,10 @@ async def _ensure_online_conversation_records(
 
     if changed:
         await db.commit()
-        conversations = await _backfill_online_conversation_records(
-            db, account_id, conversations
-        )
+    # 无论是否有变更，都回填数据库 ID，确保前端能通过 id 调用标记已读等接口
+    conversations = await _backfill_online_conversation_records(
+        db, account_id, conversations
+    )
     return conversations
 
 
@@ -1891,7 +1892,7 @@ def _generate_message_uid(msg: dict, seller_external_uid: str = "") -> str:
 
     用于去重。优先级：
     1. pnm_id 非空 → 直接使用 pnm_id
-    2. pnm_id 为空 → sha256(seller_uid + s_id + sender + receiver + content)
+    2. pnm_id 为空 → 与 validate_parsed_message 使用相同的兜底哈希
 
     注意：不包含 message_time。原因：
     - OUT 消息先入库时 messageTime=0（无服务端时间戳），推送回环到来时带真实时间戳。
@@ -1899,6 +1900,10 @@ def _generate_message_uid(msg: dict, seller_external_uid: str = "") -> str:
       导致同一消息被存两次（一条本地时间，一条服务端时间），引发排序错乱。
     - 排除 message_time 后，去重能正确命中，由 save_chat_message 的
       去重更新逻辑用服务端时间戳覆盖 message_time。
+
+    兜底哈希必须与 ws_protocol.validate_parsed_message 的兜底逻辑完全一致，
+    否则 save_chat_message 存储的 message_uid 与 WS 回环去重时计算的 content_hash
+    不匹配，会导致回环消息被当作新消息二次入库。
     """
     pnm_id = str(msg.get("pnmId") or "")
     if pnm_id:
@@ -1907,8 +1912,17 @@ def _generate_message_uid(msg: dict, seller_external_uid: str = "") -> str:
     sender = str(msg.get("senderUserId") or "")
     receiver = str(msg.get("receiverUserId") or "")
     content = str(msg.get("msgContent") or "")
-    raw = f"{seller_external_uid}|{s_id}|{sender}|{receiver}|{content}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+    content_type = int(msg.get("contentType") or 1)
+    reminder = str(msg.get("reminderContent") or "")
+    fallback_raw = "|".join([
+        s_id,
+        sender,
+        receiver,
+        str(content_type),
+        content,
+        reminder,
+    ])
+    return hashlib.sha256(fallback_raw.encode()).hexdigest()[:24]
 
 
 def stable_chat_message_uid(msg: dict, seller_external_uid: str = "") -> str:
@@ -1993,16 +2007,19 @@ async def save_chat_message(
     account_id: int,
     msg: dict,
     seller_external_uid: str = "",
-    sync_legacy_message: bool = True,
+    sync_legacy_message: bool = False,
 ) -> Optional[int]:
     """保存聊天消息到 xianyu_chat_message 表（去重）。
-    
+
     Args:
         db: 数据库会话
         account_id: 闲鱼账号ID
-        msg: 解析后的消息字典
+        msg: 解析后的消息字典（会被同步更新 pnmId，以便调用方用于 SSE 广播
+            等场景与 DB 记录保持同一身份）
         seller_external_uid: 卖家外部UID（externalUid/unb），用于稳定身份
-        
+        sync_legacy_message: 已废弃，保留参数仅为向后兼容。旧实现会向同一张表
+            二次 INSERT 导致前端出现重复消息，已移除该逻辑。
+
     Returns:
         消息 ID 或 None（已存在时）
     """
@@ -2010,7 +2027,14 @@ async def save_chat_message(
     from .ws_protocol import validate_parsed_message
     if seller_external_uid:
         msg["sellerExternalUid"] = seller_external_uid
-    msg = validate_parsed_message(msg)
+    validated = validate_parsed_message(msg)
+    # validate_parsed_message 在 pnmId 为空时会生成兜底哈希。它返回的是副本，
+    # 这里把生成的 pnmId 回写到调用方传入的 msg，确保 SSE 广播、DB 存储、
+    # WS 回环去重使用同一身份，避免前端出现重复消息。
+    generated_pnm_id = validated.get("pnmId") or ""
+    if generated_pnm_id and not str(msg.get("pnmId") or "").strip():
+        msg["pnmId"] = generated_pnm_id
+    msg = validated
     
     pnm_id = msg.get("pnmId", "") or ""
     message_uid = _generate_message_uid(msg, seller_external_uid)
@@ -2022,18 +2046,41 @@ async def save_chat_message(
     # 这解决了 OUT 消息先入库时（messageTime=0 兜底为本地时间）后推送回环到来时（带服务端时间戳）
     # 的更新问题。服务端时间戳是权威的，应优先使用。
     if message_uid:
+        # 计算基于内容的稳定哈希（不含 pnmId 和 messageTime）
+        # 用于跨不同 pnmId 的同一条消息去重（如本地持久化与 WS 回环使用不同 pnmId）
+        content_hash = _generate_message_uid({**msg, "pnmId": ""}, seller_external_uid)
+        # 第 4 条件匹配遗留记录（pnm_id/message_uid 均为 NULL 的旧 _insert_xianyu_chat_message 产物）。
+        # 旧实现仅检查 pnm_id = ''，无法匹配 NULL；且未按内容匹配，过于宽泛。
+        # 修复：同时匹配空字符串和 NULL，并增加 s_id+sender+receiver+content 精确匹配。
         existing = await db.execute(
             text("""
-                SELECT id, message_time FROM xianyu_chat_message
-                WHERE (message_uid = :muid OR (pnm_id = :muid AND pnm_id != '' AND pnm_id IS NOT NULL)) AND account_id = :account_id
+                SELECT id, message_time, pnm_id, message_uid FROM xianyu_chat_message
+                WHERE account_id = :account_id AND (
+                    message_uid = :muid
+                    OR (pnm_id = :muid AND pnm_id != '' AND pnm_id IS NOT NULL)
+                    OR (:content_hash != '' AND message_uid = :content_hash)
+                    OR (:content_hash != '' AND (pnm_id = '' OR pnm_id IS NULL) AND message_uid IS NULL
+                        AND s_id = :s_id AND sender_user_id = :sender_user_id
+                        AND receiver_user_id = :receiver_user_id AND msg_content = :msg_content)
+                )
                 LIMIT 1
             """),
-            {"muid": message_uid, "account_id": account_id}
+            {
+                "muid": message_uid,
+                "content_hash": content_hash,
+                "account_id": account_id,
+                "s_id": msg.get("sId", ""),
+                "sender_user_id": msg.get("senderUserId", ""),
+                "receiver_user_id": msg.get("receiverUserId", ""),
+                "msg_content": msg.get("msgContent", ""),
+            }
         )
         existing_row = existing.first()
         if existing_row:
             existing_id = existing_row[0]
             existing_msg_time = existing_row[1] or 0
+            existing_pnm_id = str(existing_row[2] or "")
+            existing_message_uid = str(existing_row[3] or "")
             new_msg_time = msg.get("messageTime", 0) or 0
             if isinstance(new_msg_time, (int, float)) and new_msg_time > 0 and int(new_msg_time) != int(existing_msg_time or 0):
                 try:
@@ -2045,6 +2092,31 @@ async def save_chat_message(
                     logger.debug("消息已存在，已更新消息时间")
                 except Exception:
                     logger.debug("更新消息时间失败（可忽略）")
+            # === pnmId 同步 ===
+            # 场景：misc.py 先入库时 pnmId 为空，save_chat_message 生成兜底哈希作为 pnm_id；
+            # 后续 WS 回环消息带有闲鱼服务端真实 pnmId，去重命中此记录。
+            # 如果不同步，DB 记录的 pnm_id（兜底哈希）与 WS 回环 SSE 广播的 pnmId（真实 pnmId）
+            # 不一致，loadContext 加载 DB 记录后会与 SSE 合并的消息产生不同 messageIdentity，
+            # 导致前端显示重复消息。
+            # 修复：用新消息的真实 pnmId 覆盖 DB 记录的兜底哈希 pnm_id 和 message_uid，
+            # 并回写到 msg，确保 DB、SSE 广播、WS 回环 SSE 广播使用同一 pnmId。
+            if pnm_id and pnm_id != existing_pnm_id:
+                try:
+                    await db.execute(
+                        text("UPDATE xianyu_chat_message SET pnm_id = :pnm_id, message_uid = :message_uid, updated_time = NOW() WHERE id = :id"),
+                        {"pnm_id": pnm_id, "message_uid": pnm_id, "id": existing_id}
+                    )
+                    await db.flush()
+                    logger.info(
+                        "消息已存在，已同步 pnmId 旧=%s 新=%s",
+                        existing_pnm_id or "(空)", pnm_id,
+                    )
+                except Exception:
+                    logger.debug("同步 pnmId 失败（可忽略）")
+            # 回写 DB 记录的权威 pnmId 到 msg，确保 SSE 广播使用同一身份
+            authoritative_pnm_id = pnm_id or existing_pnm_id or existing_message_uid
+            if authoritative_pnm_id:
+                msg["pnmId"] = authoritative_pnm_id
             return None
     elif pnm_id:
         existing = await db.execute(
@@ -2165,17 +2237,6 @@ async def save_chat_message(
         except Exception:
             logger.error(
                 "更新会话失败（消息已保存，会话创建失败不影响消息存储）accountId=%d",
-                account_id,
-                exc_info=True,
-            )
-
-    # 插入 xianyu_chat_message（兼容旧数据流）
-    if sync_legacy_message:
-        try:
-            await _insert_xianyu_chat_message(db, account_id, msg)
-        except Exception:
-            logger.error(
-                "插入 xianyu_chat_message 失败（不影响主流程）accountId=%d",
                 account_id,
                 exc_info=True,
             )
@@ -4060,8 +4121,9 @@ async def get_context_messages(
                     SELECT cm.s_id
                     FROM xianyu_conversation c
                     JOIN xianyu_chat_message cm
-                        AND cm.account_id = c.account_id
-                        AND cm.s_id COLLATE utf8mb4_unicode_ci = c.peer_key COLLATE utf8mb4_unicode_ci WHERE c.account_id = :account_id
+                        ON cm.account_id = c.account_id
+                       AND cm.s_id COLLATE utf8mb4_unicode_ci = c.peer_key COLLATE utf8mb4_unicode_ci
+                    WHERE c.account_id = :account_id
                       AND (
                           c.external_buyer_id COLLATE utf8mb4_unicode_ci IN (:peer_user_id, :peer_user_id_goofish)
                           OR c.peer_external_uid COLLATE utf8mb4_unicode_ci IN (:peer_user_id, :peer_user_id_goofish)

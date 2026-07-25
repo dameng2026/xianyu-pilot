@@ -8,7 +8,7 @@
         <span class="page-pill">System Overview</span>
         <h1>系统配置</h1>
         <p>
-          这里是开源版系统的总览页面与站点基础配置入口。高德地图 API Key、通用模型配置、向量模型配置与 RAG 知识库已经拆分为独立导航项，
+          这里是开源版系统的总览页面与站点基础配置入口。通用模型配置、向量模型配置与 RAG 知识库已经拆分为独立导航项，
           可在左侧切换至对应页面单独维护。
         </p>
 
@@ -33,13 +33,6 @@
         :change="summary.embeddingModelHint"
         icon="document"
         color="blue"
-      />
-      <StatCard
-        title="高德地图"
-        :value="runtimeStatusAvailable ? (runtimeStatus.amapConfigured ? '已配置' : '待配置') : '状态未知'"
-        :change="configAvailable ? (config.amapApiKeyConfigured ? 'Key 已填写' : '未填写 Key') : '配置暂不可用'"
-        icon="shield"
-        :color="runtimeStatusAvailable && runtimeStatus.amapConfigured ? 'green' : 'orange'"
       />
       <StatCard
         title="Redis 状态"
@@ -197,7 +190,6 @@
           <li><strong>ICP 备案号</strong>：中国大陆服务器必须填写，否则前端底部不显示备案信息。海外服务器可留空。</li>
           <li><strong>站点 Logo URL</strong>：可填写相对路径（如 <code>/static/logo.png</code>）或绝对 URL（如 <code>https://cdn.example.com/logo.png</code>）。</li>
           <li><strong>爬虫服务地址</strong>：该地址会接收账号授权信息，只能由部署方通过 <code>CRAWLER_BASE_URL</code> 配置并在重启后生效，浏览器页面不可修改。</li>
-          <li><strong>高德地图 Key</strong>：用于发布商品页的地址搜索，请到"高德地图"页签配置。</li>
           <li><strong>通用模型 / 向量模型</strong>：分别到"模型配置"和"向量模型"页签配置。</li>
           <li><strong>RAG 知识库</strong>：到"RAG 知识库"页签管理文档与检索测试。</li>
         </ul>

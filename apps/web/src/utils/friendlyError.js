@@ -16,6 +16,7 @@
 const XIANYU_ERROR_MAP = {
   'FAIL_SYS_USER_VALIDATE': '触发了闲鱼安全验证，请稍后重试或在闲鱼 App 中完成验证',
   'RGV587_ERROR': '闲鱼风控拦截，请稍后重试',
+  'FAIL_SYS_SESSION_EXPIRED': '登录会话已过期，请在账号管理页重新扫码登录',
   'FAIL_BIZ_ITEM_EDIT_INVALID_MAP_LOCATION': '发布地址信息不完整，请补全省市区、GPS 和 POI 信息',
   'FAIL_BIZ_ITEM_TITLE_REQUIRED': '商品标题不能为空',
   'FAIL_BIZ_ITEM_DESC_REQUIRED': '商品描述不能为空',
@@ -25,6 +26,25 @@ const XIANYU_ERROR_MAP = {
   'FAIL_SYS_ILLEGAL_ACCESS': '访问被拒绝，请稍后重试',
   'FAIL_SYS_PARAM_ERROR': '请求参数有误，请检查后重试',
   'no_available_account': '暂无可用账号，请稍后重试或添加新账号',
+  // 滑块求解相关错误码
+  'CAPTCHA_SOLVER_UNAVAILABLE': '滑块求解服务暂时不可用，请稍后重试或改为手动处理',
+  'CAPTCHA_ACCOUNT_LOAD_FAILED': '读取账号信息失败，请稍后重试',
+  'CAPTCHA_COOKIE_DECRYPT_FAILED': 'Cookie 解密失败，请重新扫码登录闲鱼账号后再尝试求解',
+  'CAPTCHA_SOLVE_FAILED': '滑块验证未通过，请重试或改为手动处理',
+  'CAPTCHA_BACKOFF_BLOCKED': '滑块求解冷却中，请稍后再试',
+  // 远程滑块求解相关错误码
+  'REMOTE_CONFIG_LOAD_FAILED': '远程滑块配置读取失败，请检查远程 API 配置',
+  'REMOTE_CONFIG_INCOMPLETE': '远程滑块求解未配置 API 地址或密钥，请先完成配置',
+  'REMOTE_SOLVER_UNAVAILABLE': '远程滑块求解服务暂时不可用，请稍后重试或改为本地求解',
+  'REMOTE_CAPTCHA_SOLVE_FAILED': '远程滑块验证未通过，请重试或改为本地求解',
+  // 约束7：远程滑块 errorCode 细分
+  'REMOTE_SLIDER_SLIDER_FAIL': '远程滑块验证未通过，请重试或检查 Cookie 状态',
+  'REMOTE_SLIDER_TIMEOUT': '远程滑块求解超时，请稍后重试',
+  'REMOTE_SLIDER_PRECHECK_REJECTED': '远程滑块预检被拒，请检查 Cookie 是否有效',
+  'REMOTE_SLIDER_SERVICE_UNAVAILABLE': '远程滑块求解服务暂时不可用，请稍后重试',
+  'REMOTE_SLIDER_NETWORK_ERROR': '网络连接失败，请检查网络或远程 API 配置后重试',
+  'REMOTE_SLIDER_INSUFFICIENT_BALANCE': '远程滑块求解余额不足，请充值后重试',
+  'CAPTCHA_COOKIE_MISSING_FIELDS': 'Cookie 缺少关键字段，请重新扫码登录闲鱼账号',
 }
 
 // 关键词 → 友好提示（用于模糊匹配）

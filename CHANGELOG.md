@@ -6,11 +6,62 @@
 - **次版本号**：向下兼容的新功能
 - **修订号**：向下兼容的问题修复
 
+维护规则见 `.trae/rules/changelog-update.md`：每次发布必须将 `[Unreleased]` 转为 `[vX.Y.Z] - YYYY-MM-DD`、同步更新 `apps/web/package.json` 的 `version` 字段、在顶部新增空 `[Unreleased]` 段。
+
 ## [Unreleased]
 
 ### 新增
+- _暂无_
+
+### 变更
+- _暂无_
+
+### 优化
+- _暂无_
+
+### 修复
+- _暂无_
+
+## [v1.5.0] - 2026-07-25
+
+### 新增
+- **商品位置改用本地行政区划数据**：移除高德地图 API 依赖，内置全国省/市/区行政区划 JSON 数据（34 省 / 344 市 / 3104 区县），开源版开箱即用无需配置 API Key；后端 `/address-dict/tree` 端点改为读取本地 `china_address_dict.json`，与商业版 `china_address_dict` 接口返回结构保持一致
+- **远程滑块求解预检验 UI 改进**：开启远程滑块求解服务时，预检验失败原因动态展示在「远程滑块求解服务」板块上方，支持多条提示同时显示，用户可明确知道哪项预检验未通过（API 链接格式、密钥非空、商业版后端连通性）；移除 API 链接输入框的复制按钮
+- **远程滑块求解服务后端与记录**：新增 `remote_slider_config` / `remote_slider_record` / `remote_slider_solver` 三个后端服务，统一管理远程滑块求解 API 配置、调用记录与求解执行；新增迁移 037 `xianyu_remote_slider_solve_record` 表（append-only，记录 request_id / trigger_scene / status / token_charged 等字段）；前端新增「远程滑块求解 API」配置页（`RemoteSliderApiPage.vue`）与 `remoteSlider.js` API 模块
+- **发货确认语句会话**：新增迁移 038 `delivery_statement_session` 表，按订单跟踪「确认前发货」语句会话生命周期（declaring / waiting / confirmed / cancelled）；新增 `ws_statement_handler.py` 发货语句处理器，支付成功后发送语句并创建会话，买家回复"确认"后才触发实际发货；`realtime_delivery.py` 与 `delivery_recovery.py` 集成语句会话判断，避免未确认订单被误发货
+- **自动滑块求解跨模块去重**：`captcha_solver.py` 新增 `should_auto_solve` / `mark_auto_solve_started` 状态机，同账号 10 分钟内只自动求解一次，避免断线重连循环、Cookie 保活、心跳停跳等多个触发源同时发起求解导致重复扣费
+- **开源版桥接与防暴露规则文件**：新增项目规则文件 `.trae/rules/changelog-update.md`（更新日志维护流程）、`.trae/rules/opensource-commercial-bridge-sync.md`（开源版与商业版桥接同步约束）、`.trae/rules/opensource-no-commercial-exposure.md`（开源版前台不得暴露商业版 IP/后台地址/token），固化开源版发布前的强制检查流程
+- **模型配置图片提示词迁移增强**：迁移 036 增加 `status`（1启用/0禁用）与 `updated_time` 字段，并增加防御性数据回填（`prompt_name <- name`、`prompt_content <- prompt_template`、`params_json <- 旧版 image_size + quality`），兼容旧版 001_init 部分迁移的数据库
+- **单元测试目录**：新增 `apps/api/tests/`（`test_address_dict_runtime.py` / `test_captcha_solver_regression.py` / `test_commercial_bridge.py`）与 `apps/web/test/`（`mobileMessagesSafety.test.js`）单元测试，覆盖行政区划数据运行时校验、滑块求解回归、商业桥接、移动端消息安全等场景
+
+### 变更
+- **移除项目内高德 API 相关配置与数据**：删除 `AmapSettingsPage.vue` 高德地图配置页、`amap_router` POI 搜索路由、`amap_api_key` 环境变量与系统配置项；商品位置数据源由高德行政区划 API 改为本地 `china_address_dict.json` 文件；导航与系统配置页同步移除「高德地图」入口
+- **发布商品页移除冗余说明文字**：移除「选择省 / 市 / 区后将以下结构化字段（poiName / prov / city / area / divisionId / gps / poiId）提交至闲鱼发布接口，与商业版发布逻辑保持一致」的技术细节说明，简化用户界面
+- **开源版版本号升至 1.5.0**：本次新增远程滑块求解服务后端、发货确认语句会话、自动求解去重等多项用户可见功能，按语义化版本次版本号 +1，从 1.4.0 升至 1.5.0
+
+### 修复
+- **本地滑块求解 500 服务器错误**：`/api/captcha/handle` 调用本地滑块求解时，`decrypt_cookie_if_needed` 在密钥不匹配或数据损坏时抛出未捕获的 `RuntimeError`，导致接口返回 500；现已在 `try_auto_solve` 中捕获异常并返回结构化错误 `CAPTCHA_COOKIE_DECRYPT_FAILED`，引导用户重新扫码登录，不再泄露服务器内部错误
+- **在线消息页面重复消息**：单条消息 '1' 曾显示为三条（数据库 id=1576 有效 pnm_id + id=1577 NULL pnm_id 旧逻辑产物 + 前端乐观 UI）；`ws_storage.py` 修复 NULL pnm_id 处理逻辑，新增 `s_id + sender + receiver + content` 精确匹配兜底，并在 `misc.py` 先入库后 WS 回环场景下用真实 pnmId 覆盖数据库兜底哈希，确保 DB / SSE 广播 / WS 回环使用同一 messageIdentity
+
+## [v1.4.0] - 2026-07-24
+
+### 新增
+- **闲鱼账号一键滑块求解**：账号管理页表格操作列与账号详情页"快捷操作"区新增"滑块求解"按钮，支持对单个账号手动触发滑块验证重试，解决账号 Cookie 触发风控时无法自动恢复的问题；求解中显示"求解中"状态，求解成功后自动刷新账号列表
+- **远程滑块求解服务全局接管**：开启"远程滑块求解服务"后，系统内所有滑块求解（账号登录、消息收发等场景）统一改走远程 API，不再调用本地浏览器求解；修复了 engine 字段硬编码导致开启远程后仍记录为本地求解的问题
+- **远程滑块求解预检验**：开启远程滑块求解服务前强制预检验 API 链接与密钥：校验链接格式（http/https + 主机名 + 路径）、密钥非空、调用远程接口连通性，任一不满足则禁止开启并返回明确错误提示，避免配置错误后所有求解请求失败
+- **Token 消费统计对接商业版真实数据**：远程滑块求解页面的 Token 消费统计改为基于商业版远程 API 实时返回的扣费结果（tokenCharged / tokenChargeFailed）计算，仅"成功求解且扣费成功"才计入 Token 消耗，扣费失败不计入；新增"数据来源"说明，明确统计口径
+- **商品位置三级联动（同步商业版）**：发布商品页"商品位置"由高德 POI 搜索改为省/市/区三级联动下拉选择，与商业版发布逻辑保持一致；选择后透传结构化字段（poiName / prov / city / area / divisionId / gps / poiId）至闲鱼 MTOP 发布接口；后端新增 /address-dict/tree 端点，内存缓存 7 天；草稿兼容旧版高德 POI 格式
+- **关于我们页面版本与更新日志规则**：新增项目规则文件 .trae/rules/changelog-update.md，强制要求每次更新必须详细描述本次更新内容、与代码改动保持一致、版本号与 package.json 同步；"关于我们"页面当前版本来自 package.json，更新日志来自 CHANGELOG.md，二者必须保持一致
+
+### 变更
+- **开源版版本号升至 1.4.0**：本次新增多项用户可见功能（账号滑块求解、远程滑块全局接管、远程滑块预检验、Token 统计对接、商品位置三级联动），按语义化版本次版本号 +1，从 1.3.0 升至 1.4.0
+- **系统配置页隐藏商业版后台地址**：开源版"商业版桥接状态"板块不再展示商业版后台 URL，仅保留商业版前台 URL 用于引流；后端 `/system/runtime-status` 与 `commercial_bridge.get_commercial_bridge_runtime` 同步移除 `commercialAdminUrl` 字段返回（保留 `commercialFrontendUrl`），避免开源用户通过浏览器获取商业版后台地址；同时 `commercialBridgeMessage` 中的 http(s) URL 统一脱敏为 `[已隐藏]`，防止 httpx 异常消息泄露商业版后端 origin
+
+## [v1.3.0] - 2026-07-22
+
+### 新增
 - **自动发货补发兜底循环**：worker 新增每 10 分钟（可配置）扫描已开启自动发货但未发出的订单，复用 RealtimeDeliveryCoordinator 的幂等状态机安全补发；覆盖 WS 事件丢失、可重试错误失败、启动遗漏等场景；新增 `POST /auto-delivery/recover` 手动触发接口与前端"立即补发未发货订单"按钮；新增 `DELIVERY_RECOVERY_*` 环境变量配置开关、间隔、批量、最小订单年龄
-- **广告申请支付功能接入**：开源版广告申请页面经美国服务器（154.9.254.86:82 Nginx）中转连接商业版后端（1.12.66.249:18080），开源版不直接接触商业版 IP；支持易支付（yipay）微信扫码支付，返回真实 zpayz.cn 支付二维码与 base64 图片；申请意图与支付下单双幂等键（LocalStorage 持久化），支持失败安全重试；商业桥接 fail-closed 三能力 flag（mutation_idempotency / payment_idempotency / paid_ad_placement）全部通过才解锁提交；新增"公司或主体名称"必填字段（前端模型、UI、后端校验三层联动）
+- **广告申请支付功能接入**：开源版广告申请页面经商业版桥接服务中转连接商业版后端，开源版不直接接触商业版 IP；支持易支付（yipay）微信扫码支付，返回真实 zpayz.cn 支付二维码与 base64 图片；申请意图与支付下单双幂等键（LocalStorage 持久化），支持失败安全重试；商业桥接 fail-closed 三能力 flag（mutation_idempotency / payment_idempotency / paid_ad_placement）全部通过才解锁提交；新增"公司或主体名称"必填字段（前端模型、UI、后端校验三层联动）
 - **自动回复范围管理**：新增 `auto_reply_scope` 路由模块，支持会话级别的自动回复开关控制，可针对单个会话启停自动回复
 - **送货工作流兼容性增强**：`delivery_workflow_compat` 路由扩展发货工作流兼容接口，补齐发货配置与文本源相关端点
 - **自动发货补发恢复服务**：新增 `delivery_recovery.py` 服务，worker 集成定期补发扫描逻辑，覆盖 WS 事件丢失与启动遗漏场景
@@ -18,7 +69,6 @@
 - **国内镜像源加速（阿里云 ACR）**：GitHub Actions 构建镜像后用 `docker buildx imagetools create` 将多架构 manifest 同步到阿里云 ACR 个人版（不重新构建，秒级完成）；`docker-compose.yml` 三个服务默认镜像源改为 ACR（国内拉取快），GHCR 保留为海外备用源，可通过 `.env` 的 `IMAGE_*` 变量切换；`start.sh` / `start.bat` 镜像源连通性检测目标同步改为 ACR（401/403 也视为可达）；ACR 仓库设为公开，开源用户无需 `docker login` 即可直接拉取
 
 ### 变更
-- **系统配置页隐藏商业版后台地址**：开源版"商业版桥接状态"板块不再展示商业版后台 URL，仅保留商业版前台 URL 用于引流；后端 `/system/runtime-status` 与 `commercial_bridge.get_commercial_bridge_runtime` 同步移除 `commercialAdminUrl` 字段返回（保留 `commercialFrontendUrl`），避免开源用户通过浏览器获取商业版后台地址；同时 `commercialBridgeMessage` 中的 http(s) URL 统一脱敏为 `[已隐藏]`，防止 httpx 异常消息泄露商业版后端 origin
 - **商品管理页面重写**：移除擦亮功能（删除 `item_polish.py` 及前端 `ItemPolishConflictCard` / `ItemPolishUnknownReconcile` / `useItemPolish` / `itemPolishState` 共 2134+ 行代码）；修复商品封面图显示（9 字段兜底 + 协议修正）；库存逻辑改为默认 999（获取不到真实库存或为 0 时）；曝光/浏览/想要数据兼容多版本字段并从多源头提取；商品同步逻辑对齐商业版
 - **首页轮播图位置调整**：轮播图移至顶部"新手三步"板块上方，符合内容优先级
 - **.env.example 商业桥接配置**：新增 `COMMERCIAL_BACKEND_BASE_URL`、`COMMERCIAL_BACKEND_ACCESS_TOKEN`、3 个能力 flag（`COMMERCIAL_BACKEND_MUTATION_IDEMPOTENCY_ENABLED` / `PAYMENT_IDEMPOTENCY_ENABLED` / `PAID_AD_PLACEMENT_ENFORCED`）配置项
@@ -100,7 +150,7 @@
 - 📝 **操作日志** — 审计留痕、保留期管理
 - 🔔 **通知渠道** — 持久化防重复测试发送，未知结果只能人工确认关闭
 - 📚 **RAG 知识库** — 向量检索增强回复
-- ⚙️ **系统配置** — 通用模型、向量模型、RAG、高德地图、商业版桥接状态
+- ⚙️ **系统配置** — 通用模型、向量模型、RAG、商业版桥接状态
 - 🧩 **Crawler 滑块求解** — 由 API 同会话维护的二维码登录
 - 🏠 **首页运营** — 轮播、公告、文字广告、广告申请、关于我们
 - 🔗 **反馈建议** — 向我们反馈功能建议

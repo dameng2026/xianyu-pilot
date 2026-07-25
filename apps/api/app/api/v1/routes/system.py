@@ -31,6 +31,12 @@ from ....services.sensitive_config import (
     is_sensitive_setting_key,
     prepare_secret_for_storage,
 )
+from ....services.remote_slider_config import (
+    build_public_remote_slider_config,
+    load_remote_slider_config,
+    precheck_remote_slider,
+    save_remote_slider_config,
+)
 from ....services.update_info import build_update_info
 from ....schemas.auth import ChangePasswordReqDTO
 from ....schemas.common import (
@@ -387,7 +393,6 @@ async def get_runtime_status(
         "redisMemory": redis_memory,
         "redisMode": redis_mode,
         "crawlerBaseUrl": settings.crawler_base_url,
-        "amapConfigured": bool(config.get("amapApiKey")),
         "commercialBridgeConfigured": bool(commercial_runtime.get("commercialBridgeConfigured")),
         "commercialBridgeConnected": bool(commercial_runtime.get("commercialBridgeConnected")),
         "commercialBridgeMode": commercial_runtime.get("commercialBridgeMode") or "local-fallback",
@@ -495,3 +500,66 @@ async def report_update_feedback(
         await db.rollback()
         return ResultObject.internal_error()
     return ResultObject.success("反馈已记录")
+
+
+# ============================================================
+# 远程滑块求解配置
+# ============================================================
+
+@system_info_router.get("/remote-slider-config", response_model=ResultObject[dict])
+async def get_remote_slider_config_route(
+    current_user: dict = Depends(get_current_user),
+):
+    """获取远程滑块求解配置（不返回明文 API Key）。"""
+    try:
+        from ....core.database import get_db as _get_db
+        async for db in _get_db():
+            config = await load_remote_slider_config(db)
+            return ResultObject.success(build_public_remote_slider_config(config))
+    except Exception as exc:
+        logger.error("获取远程滑块求解配置失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()
+
+
+@system_info_router.post("/remote-slider-config", response_model=ResultObject[dict])
+async def update_remote_slider_config_route(
+    data: dict = {},
+    current_user: dict = Depends(get_current_user),
+):
+    """保存远程滑块求解配置。"""
+    try:
+        from ....core.database import get_db as _get_db
+        async for db in _get_db():
+            config = await save_remote_slider_config(db, data)
+            await db.commit()
+            return ResultObject.success(build_public_remote_slider_config(config))
+    except ValueError as exc:
+        # 预检验失败：返回明确的错误信息，不开启远程滑块
+        logger.warning("远程滑块求解预检验失败: %s", str(exc))
+        return ResultObject.failed(str(exc), code=400)
+    except Exception as exc:
+        logger.error("保存远程滑块求解配置失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()
+
+
+@system_info_router.post("/remote-slider-precheck", response_model=ResultObject[dict])
+async def precheck_remote_slider_route(
+    data: dict = {},
+    current_user: dict = Depends(get_current_user),
+):
+    """预检验远程滑块求解服务的连通性与凭证有效性。"""
+    try:
+        api_url = str(data.get("apiUrl") or "").strip()
+        api_key = str(data.get("apiKey") or "").strip()
+        # 如果未传入 apiKey，尝试从已保存的配置中读取
+        if not api_key:
+            from ....core.database import get_db as _get_db
+            async for db in _get_db():
+                existing = await load_remote_slider_config(db)
+                api_key = existing.get("apiKey") or ""
+                break
+        result = await precheck_remote_slider(api_url, api_key)
+        return ResultObject.success(result)
+    except Exception as exc:
+        logger.error("远程滑块预检验失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()

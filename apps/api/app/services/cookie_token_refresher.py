@@ -31,6 +31,7 @@ from sqlalchemy import text
 
 from ..core.cookie_crypto import decrypt_cookie_if_needed, encrypt_cookie_for_storage
 from ..core.database import async_session
+from ..core.background_tasks import spawn_background_task
 from .notify_dispatcher import (
     clear_cookie_expired_state,
     notify_cookie_expired,
@@ -38,6 +39,56 @@ from .notify_dispatcher import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _try_auto_solve_from_cookie_keepalive(account_id: int) -> None:
+    """Cookie 保活触发滑块验证时，后台自动发起滑块求解。
+
+    使用与 ws_client 相同的 10 分钟去重窗口（共享 captcha_solver 中的状态），
+    避免同账号多个触发源同时发起求解。
+    """
+    from .captcha_solver import (
+        should_auto_solve,
+        mark_auto_solve_started,
+        handle_captcha_for_account,
+    )
+
+    if not should_auto_solve(account_id):
+        logger.info(
+            "Cookie 保活触发滑块求解去重跳过 accountId=%d（10 分钟内已执行过）",
+            account_id,
+        )
+        return
+    mark_auto_solve_started(account_id)
+
+    logger.info("Cookie 保活触发自动滑块求解 accountId=%d", account_id)
+    try:
+        result = await handle_captcha_for_account(
+            account_id=account_id,
+            response=None,
+            auto_solve=True,
+            trigger_scene="cookie_keepalive",
+            open_reason="Cookie 保活触发滑块验证，自动求解",
+            solve_reason="Cookie 保活策略检测到滑块验证",
+        )
+        recovered = bool(result.get("recovered"))
+        if recovered:
+            logger.info(
+                "Cookie 保活触发滑块求解成功，Cookie 已恢复 accountId=%d",
+                account_id,
+            )
+        else:
+            logger.warning(
+                "Cookie 保活触发滑块求解未恢复 accountId=%d result=%s",
+                account_id,
+                result.get("autoSolveResult", {}),
+            )
+    except Exception as exc:
+        logger.warning(
+            "Cookie 保活触发滑块求解异常 accountId=%d errorType=%s",
+            account_id,
+            type(exc).__name__,
+        )
 
 
 # ============================================================
@@ -325,6 +376,26 @@ async def _do_cookie_keepalive(state: AccountRefreshState) -> bool:
                     await notify_captcha_required(state.account_id, err_str)
                 except Exception:
                     pass
+                # 如果用户启用了"Cookie 保活策略"触发场景，后台发起自动滑块求解
+                try:
+                    from .remote_slider_config import (
+                        TRIGGER_SCENE_COOKIE_KEEPALIVE,
+                        is_trigger_scene_enabled,
+                    )
+                    if await is_trigger_scene_enabled(TRIGGER_SCENE_COOKIE_KEEPALIVE):
+                        logger.info(
+                            "Cookie 保活检测到滑块验证，触发自动求解 accountId=%d",
+                            state.account_id,
+                        )
+                        spawn_background_task(
+                            _try_auto_solve_from_cookie_keepalive(state.account_id),
+                            name=f"cookie-keepalive.auto-solve:{state.account_id}",
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "Cookie 保活触发场景检查异常 errorType=%s",
+                        type(exc).__name__,
+                    )
             elif "SESSION_EXPIRED" in err_str or "登入失败" in err_str:
                 await _update_cookie_status(
                     state.account_id, 0,
@@ -374,7 +445,19 @@ async def _call_has_login(account_id: int) -> dict:
         rec = row.mappings().first()
         if not rec:
             return {"success": False, "error": "ACCOUNT_NOT_FOUND"}
-        cookie_str = decrypt_cookie_if_needed(rec.get("encrypted_cookie") or "")
+        # decrypt_cookie_if_needed 在密钥不匹配/数据损坏时会抛 RuntimeError，
+        # 必须在此处捕获，否则会冒泡到 check_cookie_login 的兜底 except，
+        # 被误归类为 UPSTREAM_UNAVAILABLE（暗示网络/上游问题，实际是本地解密失败）。
+        # 常见触发场景：账号从其他环境迁移过来，COOKIE_CRYPTO_SECRET 已变更。
+        # 与 captcha_solver.try_auto_solve 中的处理保持一致。
+        try:
+            cookie_str = decrypt_cookie_if_needed(rec.get("encrypted_cookie") or "")
+        except Exception as exc:
+            logger.error(
+                "统一登录校验 Cookie 解密失败 accountId=%d errorType=%s",
+                account_id, type(exc).__name__,
+            )
+            return {"success": False, "error": "CREDENTIAL_MISSING"}
         if not cookie_str:
             return {"success": False, "error": "CREDENTIAL_MISSING"}
         unb = str(rec.get("unb") or "")

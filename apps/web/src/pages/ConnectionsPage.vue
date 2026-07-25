@@ -252,7 +252,9 @@ async function toggle(row){
     return
   }
 
-  setBusy(row.id, true); error.value=''
+  setBusy(row.id, true); error.value=''; notice.value=''
+  // 连接失败时的失败原因：需在 load() 之后再写入 error.value，避免被 load() 同步清空
+  let pendingFailure = ''
   try {
     const startRes = await startWebSocket(row.id)
     const startData = startRes?.data || {}
@@ -260,15 +262,17 @@ async function toggle(row){
     if (typeof startData.connected !== 'boolean') throw new Error('WebSocket 启动响应缺少连接状态')
 
     if (startData.connected === true) {
+      // 连接成功：以 success 样式提示
       showNotice(startData.optimistic
         ? `${row.name}：WS 连接已提交，未检测到滑块/验证`
-        : `${row.name}：WS 连接已确认就绪`)
+        : `${row.name}：WS 连接成功`)
       log(startData.optimistic
         ? `${row.name} 连接已提交（乐观确认），未检测到验证`
         : `${row.name} 连接成功（状态探测确认）`)
     } else {
-      showNotice(startData.message || `${row.name}：连接请求返回未连接状态`)
-      log(`${row.name} 启动返回：${startData.message || startData.status || '未连接'}`)
+      // 连接失败：以 error 样式提示失败原因（load 之后再写入 error.value）
+      pendingFailure = startData.message || startData.lastError || '连接请求返回未连接状态'
+      log(`${row.name} 启动失败：${pendingFailure}`)
     }
 
     if (startData.optimistic) {
@@ -282,8 +286,11 @@ async function toggle(row){
       await refresh(row, { silent: true, skipRefreshState: true }).catch(() => {})
     }
     syncSelected(row.id)
-    // 连接成功后刷新账号列表，同步 Cookie 状态
-    load()
+    // 刷新账号列表，同步 Cookie 状态（await 确保失败原因可在 load 之后写回）
+    await load()
+    if (pendingFailure) {
+      error.value = `${row.name}：${pendingFailure}`
+    }
   } catch(e){
     error.value = e.message || '启动命令提交失败'
     log(`${row.name} 启动命令未能提交：${error.value}`)

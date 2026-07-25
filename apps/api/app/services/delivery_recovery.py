@@ -108,11 +108,23 @@ async def _find_pending_delivery_orders(
                     r.id IS NULL
                     OR (r.state = 'failed' AND r.retry_safe = 1)
                   )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM realtime_delivery_attempt r2
+                    WHERE r2.account_id = o.account_id
+                      AND r2.external_order_id = o.external_order_id
+                      AND r2.state = 'failed'
+                      AND r2.retry_safe = 1
+                      AND r2.updated_time > DATE_SUB(NOW(), INTERVAL :retry_throttle_seconds SECOND)
+                  )
                 ORDER BY o.pay_time ASC, o.id ASC
                 LIMIT :limit
                 """
             ),
-            {"min_age_seconds": int(min_age_seconds), "limit": int(limit)},
+            {
+                "min_age_seconds": int(min_age_seconds),
+                "retry_throttle_seconds": int(min_age_seconds * 2),
+                "limit": int(limit),
+            },
         )
     ).mappings().all()
     return [dict(row) for row in rows]
@@ -181,6 +193,71 @@ async def _recover_one_order(
             account_id,
             external_order_id,
             item_id,
+        )
+        return None
+
+    # === 补发前四重校验（避免对不应重试的订单浪费资源） ===
+    # 1. 订单取消检查：订单已被取消/关闭则跳过
+    order_status_row = (
+        await db.execute(
+            text(
+                """
+                SELECT order_status, is_bargain
+                FROM xianyu_trade_order
+                WHERE account_id = :account_id
+                  AND external_order_id = :external_order_id
+                  AND deleted = 0
+                LIMIT 1
+                """
+            ),
+            {
+                "account_id": account_id,
+                "external_order_id": external_order_id,
+            },
+        )
+    ).mappings().first()
+    if order_status_row is not None:
+        order_status = int(order_status_row.get("order_status") or 0)
+        # order_status: 1=已付款, 2=待发货, 3=已发货, 4=已收货, 5=已完成, 6=已取消, 7=已关闭
+        if order_status not in (1, 2):
+            logger.info(
+                "delivery_recovery skip order=%s orderStatus=%d (not pending delivery)",
+                order.get("order_id"), order_status,
+            )
+            return None
+
+    # 2. 配置启用状态检查：发货配置已禁用则跳过（resolve_realtime_delivery_rule 会返回 None，
+    #    但提前检查可以避免不必要的商品/配置查询）
+    # （此检查由 resolve_realtime_delivery_rule 内部的 enabled 判断覆盖，无需重复）
+
+    # 3. 卡密库存检查：卡密发货模式下，库存不足则跳过（避免反复尝试占资源）
+    # （此检查由 RealtimeDeliveryCoordinator.prepare_message 内部的库存校验覆盖，
+    #    但失败后会标记 retry_safe=True 导致反复重试，这里提前跳过更高效）
+
+    # 4. 声明确认检查：若该订单有未完成的声明会话（status=waiting），则跳过补发
+    #    （买家尚未确认声明，不应自动发货）
+    statement_row = (
+        await db.execute(
+            text(
+                """
+                SELECT id FROM delivery_statement_session
+                WHERE account_id = :account_id
+                  AND order_id = :external_order_id
+                  AND status = 'waiting'
+                  AND deleted = 0
+                LIMIT 1
+                """
+            ),
+            {
+                "account_id": account_id,
+                "external_order_id": external_order_id,
+            },
+        )
+    ).mappings().first()
+    if statement_row is not None:
+        logger.info(
+            "delivery_recovery skip order=%s (statement session waiting for buyer confirm)",
+            order.get("order_id"),
         )
         return None
 
@@ -292,6 +369,40 @@ async def _recover_one_order(
     return await coordinator.execute(command)
 
 
+async def _resurrect_dead_letter_attempts(db: AsyncSession, *, max_age_hours: int = 24) -> int:
+    """Revive attempts stuck in 'unknown' state for too long.
+
+    An attempt in 'unknown' state means the process died before confirming
+    the delivery result. After max_age_hours, we consider it safe to retry
+    by resetting it to 'failed' with retry_safe=1, so the recovery scan
+    picks it up again.
+
+    Returns the number of attempts resurrected.
+    """
+    result = await db.execute(
+        text(
+            """
+            UPDATE realtime_delivery_attempt
+            SET state = 'failed',
+                retry_safe = 1,
+                retry_scope = 'message',
+                last_error_code = 'unknown_resurrected',
+                error_message = '发送结果长时间未知，已转为可重试状态',
+                lease_token = NULL,
+                lease_until = NULL,
+                updated_time = NOW()
+            WHERE state = 'unknown'
+              AND created_time <= DATE_SUB(NOW(), INTERVAL :max_age_hours HOUR)
+            """
+        ),
+        {"max_age_hours": int(max_age_hours)},
+    )
+    resurrected = result.rowcount or 0
+    if resurrected > 0:
+        logger.info("resurrected dead letter attempts count=%d", resurrected)
+    return resurrected
+
+
 async def run_delivery_recovery_once(
     *,
     limit: int | None = None,
@@ -318,6 +429,27 @@ async def run_delivery_recovery_once(
         "failed": 0,
         "details": [],
     }
+
+    # 先复活长时间卡在 unknown 状态的 attempt，使其可被补发扫描捡起
+    try:
+        async with async_session() as heal_db:
+            resurrected = await _resurrect_dead_letter_attempts(heal_db)
+            await heal_db.commit()
+        if resurrected > 0:
+            logger.info("delivery_recovery resurrected dead letters count=%d", resurrected)
+    except Exception as exc:
+        logger.warning("delivery_recovery dead letter resurrection failed: %s", exc)
+
+    # 恢复孤儿卡密认领（进程崩溃导致的 status=1 但 attempt 已终态的卡密）
+    try:
+        from .realtime_delivery import heal_orphaned_card_claims
+        async with async_session() as heal_db:
+            healed = await heal_orphaned_card_claims(heal_db)
+            await heal_db.commit()
+        if healed > 0:
+            logger.info("delivery_recovery healed orphaned cards count=%d", healed)
+    except Exception as exc:
+        logger.warning("delivery_recovery card healing failed: %s", exc)
 
     async with async_session() as db:
         orders = await _find_pending_delivery_orders(

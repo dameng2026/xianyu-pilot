@@ -47,8 +47,8 @@ export function getAccountSummary(params) {
   return request({ url: '/xianyu/accounts/summary', method: 'get', params })
 }
 
-export function refreshAccountProfile(id) {
-  return request({ url: `/xianyu/accounts/${id}/refresh-profile`, method: 'post' })
+export function refreshAccountProfile(id, config = {}) {
+  return request({ url: `/xianyu/accounts/${id}/refresh-profile`, method: 'post', ...config })
 }
 
 export function checkAccountAuth(id) {

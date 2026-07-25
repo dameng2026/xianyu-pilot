@@ -689,6 +689,7 @@ async function sendCurrentMessage() {
   const idempotencyKey = createMessageIdempotencyKey()
   const optimistic = {
     id: tempId,
+    pnmId: tempId,
     content: text,
     direction: 'OUT',
     createdAt: new Date().toISOString(),
@@ -719,7 +720,9 @@ async function sendCurrentMessage() {
     const outcome = resolveManualMessageOutcome(res)
     const target = chatMessages.value.find(m => m.id === tempId)
     if (target) {
-      target.id = outcome.uuid || tempId
+      const platformMessageId = outcome.uuid || ''
+      target.pnmId = platformMessageId || target.pnmId || ''
+      target.id = platformMessageId || tempId
       target.sendStatus = outcome.status
       target.retrySafe = outcome.retrySafe
     }

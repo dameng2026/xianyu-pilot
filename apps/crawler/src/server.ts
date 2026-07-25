@@ -409,7 +409,10 @@ function buildSlideOptions(body: Record<string, unknown>, signal: AbortSignal): 
   return {
     cookieStr: validateCookie(optionalString(body, 'cookieStr') || optionalString(body, 'cookie')),
     targetUrl: validateTargetUrl(optionalString(body, 'targetUrl')),
-    headless: FORCE_HEADLESS ? true : requestedHeadless,
+    // 显式传入的 headless 优先（前台手动求解场景前端会传 false 让 Chrome 弹窗），
+    // 未传时按 FORCE_HEADLESS 兜底（Docker/生产环境默认无头，避免无 DISPLAY 时启动失败）。
+    // sliderSolver.resolveHeadlessMode 内部会再次按此规则解析。
+    headless: requestedHeadless !== undefined ? requestedHeadless : (FORCE_HEADLESS ? true : undefined),
     maxRetries: optionalInteger(body, 'maxRetries', 1, 5),
     timeoutMs: optionalInteger(body, 'timeoutMs', 5_000, 60_000),
     signal,

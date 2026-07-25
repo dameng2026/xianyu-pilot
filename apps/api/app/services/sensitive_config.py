@@ -6,7 +6,6 @@ from typing import Any, Callable
 from ..core.secret_store import decrypt_secret, encrypt_secret
 
 
-AMAP_API_KEY_PURPOSE = "system.amap_api_key"
 GENERAL_MODEL_API_KEY_PURPOSE = "system.general_model.api_key"
 EMBEDDING_MODEL_API_KEY_PURPOSE = "system.embedding_model.api_key"
 MODEL_CONFIG_API_KEY_PURPOSE = "model_config.api_key"
@@ -14,20 +13,20 @@ AI_PROVIDER_API_KEY_PURPOSE = "xianyu_ai_provider.api_key"
 RAG_EMBEDDING_API_KEY_PURPOSE = "rag_knowledge_base.embedding_api_key"
 FEEDBACK_STORE_PURPOSE = "frontend.feedback_store"
 AD_APPLICATION_STORE_PURPOSE = "frontend.ad_applications_store"
+REMOTE_SLIDER_API_KEY_PURPOSE = "remote_slider.api_key"
 
 SENSITIVE_SETTING_KEYS = frozenset(
     {
         "admin_password_hash",
-        "amap_api_key",
         "frontend.notification_settings",
         "frontend.feedback_store",
         "frontend.ad_applications_store",
         "open_source.system_config",
+        "remote_slider.config",
     }
 )
 
 SYSTEM_SECRET_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("amapApiKey",), AMAP_API_KEY_PURPOSE),
     (("generalModel", "apiKey"), GENERAL_MODEL_API_KEY_PURPOSE),
     (("embeddingModel", "apiKey"), EMBEDDING_MODEL_API_KEY_PURPOSE),
 )

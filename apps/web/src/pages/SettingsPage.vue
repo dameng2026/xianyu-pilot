@@ -11,7 +11,6 @@
 import { computed } from 'vue'
 import ConfigNav from '../components/ConfigNav.vue'
 import SystemSettingsPage from './admin/SystemSettingsPage.vue'
-import AmapSettingsPage from './admin/AmapSettingsPage.vue'
 import ModelSettingsPage from './admin/ModelSettingsPage.vue'
 import EmbeddingSettingsPage from './admin/EmbeddingSettingsPage.vue'
 import RagSettingsPage from './admin/RagSettingsPage.vue'
@@ -26,7 +25,6 @@ defineEmits(['navigate'])
 const map = {
   'settings-system': SystemSettingsPage,
   'settings-ai-cs': AiCsSettings,
-  'settings-amap': AmapSettingsPage,
   'settings-model': ModelSettingsPage,
   'settings-embedding': EmbeddingSettingsPage,
   'settings-rag': RagSettingsPage,

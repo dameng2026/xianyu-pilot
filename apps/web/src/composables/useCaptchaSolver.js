@@ -50,9 +50,12 @@ function clearSolveStatus(accountId) {
  * 手动触发滑块求解
  * @param {number} accountId 账号ID
  * @param {string} triggerScene 触发场景，默认 'manual'
- * @param {object} extra 额外参数 { openReason, solveReason }
+ * @param {object} extra 额外参数 { openReason, solveReason, headless }
  *   - openReason: 开启原因（为什么打开滑块求解流程）
  *   - solveReason: 求解原因（为什么进行滑块求解）
+ *   - headless: 是否无头模式。false=弹出浏览器窗口便于人工观察（前台手动求解推荐），
+ *               true=无头模式，不传/undefined=沿用后端默认（无头）
+ *               注意：crawler 容器 CRAWLER_FORCE_HEADLESS=true 会强制覆盖为无头
  * @returns {Promise<{success: boolean, recovered: boolean, message: string}>}
  */
 async function solveManually(accountId, triggerScene = 'manual', extra = {}) {
@@ -72,13 +75,18 @@ async function solveManually(accountId, triggerScene = 'manual', extra = {}) {
   }
 
   try {
-    const res = await handleCaptcha({
+    const payload = {
       accountId: Number(accountId),
       autoSolve: true,
       triggerScene,
       openReason,
       solveReason,
-    })
+    }
+    // 仅当显式指定 headless 时透传，避免影响自动触发场景的默认行为
+    if (extra.headless !== undefined && extra.headless !== null) {
+      payload.headless = Boolean(extra.headless)
+    }
+    const res = await handleCaptcha(payload)
     const data = res?.data || res || {}
     const recovered = Boolean(data.recovered)
     const autoSolveResult = data.autoSolveResult || {}
@@ -110,11 +118,17 @@ async function solveManually(accountId, triggerScene = 'manual', extra = {}) {
       status: 'fail',
       result: 'slider_fail',
       reason: autoSolveResult.error || '滑块求解失败',
+      errorCode: autoSolveResult.errorCode || '',
       accountName: solveStates[key]?.accountName || '',
       timestamp: Date.now(),
       recordId: null,
     }
-    return { success: false, recovered: false, message: autoSolveResult.error || '滑块求解失败' }
+    return {
+      success: false,
+      recovered: false,
+      message: autoSolveResult.error || '滑块求解失败',
+      errorCode: autoSolveResult.errorCode || '',
+    }
   } catch (e) {
     solveStates[key] = {
       status: 'fail',

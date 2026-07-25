@@ -880,7 +880,7 @@ async function publishDraft(row) {
     const meta = parseDraftMeta(item)
     const location = meta.location || item.location
     if (!location || !location.poiName) {
-      return showNotice('warn', '发布前需要高德地图位置。请回到"商机发掘"草稿区搜索并选择发布位置，或在"发布商品"页重新发布。')
+      return showNotice('warn', '发布前需要选择发布位置。请回到"商机发掘"草稿区搜索并选择发布位置，或在"发布商品"页重新发布。')
     }
     intent = {
       idempotencyKey: createExternalOperationKey('publish-draft'),

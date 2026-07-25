@@ -29,7 +29,8 @@ RUN groupadd --gid 10001 app \
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
 COPY --chown=app:app . .
-RUN mkdir -p /app/uploads /app/data \
+RUN test -s /app/app/data/china_address_dict.json \
+    && mkdir -p /app/uploads /app/data \
     && chown -R app:app /app/uploads /app/data
 
 USER app

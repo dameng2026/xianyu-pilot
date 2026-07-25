@@ -48,6 +48,27 @@ from ..core.database import async_session
 
 logger = logging.getLogger(__name__)
 
+# === 自动滑块求解去重（跨模块共享） ===
+# 同账号 10 分钟内只自动求解一次，避免断线重连循环 / Cookie 保活 / 心跳停跳
+# 等多个触发源同时发起求解。
+# ws_client._auto_solve_captcha_after_failure 和 cookie_token_refresher 均使用此状态。
+_AUTO_SOLVE_LAST_TS: dict[int, float] = {}
+_AUTO_SOLVE_DEDUP_SECONDS = 600  # 10 分钟
+
+
+def should_auto_solve(account_id: int) -> bool:
+    """检查该账号是否允许自动求解（未在去重窗口内）。"""
+    now_ts = time.time()
+    last_solve_ts = _AUTO_SOLVE_LAST_TS.get(account_id, 0)
+    if now_ts - last_solve_ts < _AUTO_SOLVE_DEDUP_SECONDS:
+        return False
+    return True
+
+
+def mark_auto_solve_started(account_id: int) -> None:
+    """标记该账号已开始自动求解（更新去重时间戳）。"""
+    _AUTO_SOLVE_LAST_TS[account_id] = time.time()
+
 
 def _merge_cookies(old_str: str, new_str: str) -> str:
     """增量合并两个 Cookie 字符串，新 Cookie 覆盖同名旧字段。
@@ -222,12 +243,15 @@ def build_captcha_instructions(
 # 关键：只有消息页面才会出现滑块弹窗，首页本身不会弹出弹窗
 CAPTCHA_TARGET_URL = "https://www.goofish.com/im"
 
+def _resolve_internal_api_token() -> str:
+    return str(getattr(settings, "internal_api_token", "") or "").strip()
+
 
 async def try_auto_solve(
     account_id: int,
     target_url: Optional[str] = None,
     headless: bool = True,
-    max_retries: int = 3,
+    max_retries: int = 2,
     *,
     force: bool = False,
 ) -> dict:
@@ -300,7 +324,26 @@ async def try_auto_solve(
             "durationMs": 0,
         }
 
-    cookie_str = decrypt_cookie_if_needed(row["encrypted_cookie"])
+    # decrypt_cookie_if_needed 在密钥不匹配/数据损坏时会抛 RuntimeError，
+    # 必须在此处捕获，否则会一路冒泡到路由层导致 500 服务器内部错误。
+    # 常见触发场景：账号从其他环境迁移过来，COOKIE_CRYPTO_SECRET 已变更。
+    try:
+        cookie_str = decrypt_cookie_if_needed(row["encrypted_cookie"])
+    except Exception as exc:
+        logger.error(
+            "滑块账号 Cookie 解密失败 accountId=%d errorType=%s",
+            account_id, type(exc).__name__,
+        )
+        return {
+            "success": False,
+            "solved": False,
+            "captchaDetected": False,
+            "attempts": 0,
+            "errorCode": "CAPTCHA_COOKIE_DECRYPT_FAILED",
+            "error": "Cookie 解密失败，请重新扫码登录闲鱼账号后再尝试求解",
+            "durationMs": 0,
+        }
+
     if not cookie_str:
         return {
             "success": False,
@@ -316,11 +359,7 @@ async def try_auto_solve(
     endpoint = f"{crawler_url.rstrip('/')}/api/goofish/slide-solve"
 
     # 内部 token
-    internal_token = (
-        getattr(settings, "internal_api_token", None)
-        or os.environ.get("INTERNAL_API_TOKEN")
-        or "dev-only-internal-api-token-change-me-32-chars"
-    )
+    internal_token = _resolve_internal_api_token()
     payload = {
         "cookie": cookie_str,
         "targetUrl": target_url or CAPTCHA_TARGET_URL,
@@ -432,8 +471,11 @@ async def _update_cookie_status_for_captcha(
 
     Args:
         cookie_status: 0=不可用/验证中, 1=可用
-        status_code: last_login_status_code（VERIFYING/CAPTCHA_FAILED/SESSION_EXPIRED/OK）
+        status_code: last_login_status_code（VERIFYING/SESSION_EXPIRED/CAPTCHA_REQUIRED/OK）
         status_message: last_login_status_message
+
+    注意：滑块求解失败不再使用 CAPTCHA_FAILED 状态码，因为这会造成假性"需验证"
+    并阻断 WS 连接。求解失败时保持 cookie_status 不变，由统一登录校验确认真实状态。
     """
     try:
         async with async_session() as db:
@@ -545,6 +587,7 @@ async def handle_captcha_for_account(
     trigger_scene: str = "manual",
     open_reason: str = "",
     solve_reason: str = "",
+    headless: Optional[bool] = None,
 ) -> dict:
     """综合处理账号的滑块验证场景。
 
@@ -554,10 +597,16 @@ async def handle_captcha_for_account(
     4. 自动求解成功后，刷新 token 并恢复 cookie_status
 
     Args:
-        trigger_scene: 触发场景 (ws_connect/cookie_keepalive/token_refresh/manual)，
+        trigger_scene: 触发场景 (ws_connect/cookie_keepalive/heartbeat_stop/token_refresh/manual)，
                        用于写入求解记录和 SSE 广播
         open_reason: 开启原因（为什么打开滑块求解流程）
         solve_reason: 求解原因（为什么进行滑块求解，具体业务原因）
+        headless: 是否无头模式运行 Playwright。
+                  None=沿用 try_auto_solve 默认（True，无头，不弹窗）；
+                  False=有头模式，会弹出 Chrome 窗口便于人工观察；
+                  True=强制无头（与默认相同）。
+                  注意：crawler-service 端的 CRAWLER_FORCE_HEADLESS 若为 true
+                  会强制覆盖此参数为无头模式。
 
     Returns:
         {
@@ -647,15 +696,44 @@ async def handle_captcha_for_account(
             record_id=solve_record_id,
         )
 
-        # 同步更新 Cookie 状态为"验证中"，让前端账号列表立即反映求解状态
-        await _update_cookie_status_for_captcha(
-            account_id,
-            cookie_status=0,
-            status_code="VERIFYING",
-            status_message=f"正在自动求解滑块验证（{trigger_scene}）",
-        )
+        # 仅更新状态消息为"验证中"，不改变 cookie_status
+        # 避免在求解尚未完成前误判 Cookie 失效，导致前端显示异常
+        # cookie_status 的最终变更由求解结果决定
+        try:
+            async with async_session() as db:
+                # 读取当前 cookie_status，保持不变
+                row = (await db.execute(
+                    text("SELECT cookie_status FROM xianyu_account_auth WHERE account_id = :aid LIMIT 1"),
+                    {"aid": account_id},
+                )).first()
+                current_cookie_status = int(row[0]) if row else 1
+            await _update_cookie_status_for_captcha(
+                account_id,
+                cookie_status=current_cookie_status,
+                status_code="VERIFYING",
+                status_message=f"正在自动求解滑块验证（{trigger_scene}）",
+            )
+        except Exception:
+            logger.warning("更新 VERIFYING 状态失败 accountId=%d", account_id, exc_info=True)
 
-        auto_solve_result = await try_auto_solve(account_id)
+        # 远程滑块求解开关：开启时调用商业版远程 API，否则使用本地 crawler-service
+        from .remote_slider_config import is_remote_slider_enabled
+        use_remote = await is_remote_slider_enabled()
+        solve_engine = "Remote" if use_remote else "Playwright"
+        if use_remote:
+            from .remote_slider_solver import try_remote_solve
+            auto_solve_result = await try_remote_solve(
+                account_id,
+                trigger_scene=trigger_scene,
+                open_reason=open_reason,
+                solve_reason=solve_reason,
+            )
+        else:
+            # 仅当显式指定 headless 时透传，否则使用 try_auto_solve 默认（True 无头）
+            solve_kwargs = {"account_id": account_id}
+            if headless is not None:
+                solve_kwargs["headless"] = headless
+            auto_solve_result = await try_auto_solve(**solve_kwargs)
 
         if auto_solve_result.get("solved"):
             logger.info("账号 %d 滑块自动求解成功", account_id)
@@ -664,7 +742,18 @@ async def handle_captcha_for_account(
             # 滑块求解器在 Cookie Session 已过期时会误报成功（页面跳转到登录页，
             # 没有滑块组件）。此处用 Token API 做最终验证，避免错误恢复 cookie_status=1
             # 导致后续 ws_client 校验失败。
-            cookie_valid = await _verify_cookie_via_token_api(account_id)
+            # 手动触发的求解：跳过 Token API 二次验证
+            # 原因：用户刚重新扫码后 Cookie 是新鲜的，但 _m_h5_tk 可能尚未生成，
+            # Token API 会因此返回失败，导致误判 Cookie 过期，错误地更改状态。
+            # 手动触发场景下，信任求解器结果即可。
+            skip_token_verify = trigger_scene in ("manual", "manual_retry")
+            cookie_valid = True
+            if not skip_token_verify:
+                cookie_valid = await _verify_cookie_via_token_api(account_id)
+            else:
+                logger.info(
+                    "手动触发滑块求解，跳过 Token API 二次验证 accountId=%d", account_id,
+                )
             if not cookie_valid:
                 logger.warning(
                     "账号 %d 滑块求解器报告成功，但 Token API 验证 Cookie 仍不可用，"
@@ -704,7 +793,7 @@ async def handle_captcha_for_account(
                     retry_count=int(auto_solve_result.get("attempts") or 0),
                     duration_ms=int(auto_solve_result.get("durationMs") or 0),
                     screenshot_path=str(auto_solve_result.get("screenshotPath") or ""),
-                    engine="Playwright",
+                    engine=solve_engine,
                 )
                 await broadcast_captcha_solve(
                     account_id, account_name,
@@ -750,7 +839,7 @@ async def handle_captcha_for_account(
                 await update_solve_record(
                     solve_record_id, status="success", result="slider_success",
                     retry_count=int(auto_solve_result.get("attempts") or 0),
-                    engine="Playwright",
+                    engine=solve_engine,
                     error_message=(
                         f"[durationMs={int(auto_solve_result.get('durationMs') or 0)}] 滑块求解成功"
                     ),
@@ -765,20 +854,111 @@ async def handle_captcha_for_account(
             # 滑块求解失败
             logger.warning("账号 %d 滑块自动求解失败", account_id)
             error_msg = auto_solve_result.get("error") or "滑块验证未通过"
-            # 同步更新 Cookie 状态为"不可用"，让前端账号列表反映失败状态
-            await _update_cookie_status_for_captcha(
-                account_id,
-                cookie_status=0,
-                status_code="CAPTCHA_FAILED",
-                status_message=f"滑块求解失败：{error_msg}",
-            )
+
+            # 关键修复：滑块求解失败不代表 Cookie 失效。
+            # 求解失败可能由 crawler-service 不可用、Playwright 异常、网络问题等导致，
+            # 与 Cookie 本身有效性无关。直接置 cookie_status=0 + status_code=CAPTCHA_FAILED
+            # 会造成假性"需验证"，并阻断 WS 连接（_load_ws_credentials 要求
+            # login_status_code == "OK"）。
+            #
+            # 对于手动触发的求解（manual/manual_retry）：调用统一登录校验
+            # （check_cookie_login → hasLogin API）确认 Cookie 真实状态，
+            # 而不是直接信任缓存的 cookie_status。避免因历史残留的 cookie_status=0
+            # 造成假性"Cookie 已失效"提示。hasLogin API 不依赖 _m_h5_tk，
+            # 规避了手动场景下 Token API 误判过期的风险。
+            #
+            # 对于自动触发的求解：保持 cookie_status 不变，避免引入 30s 延迟。
+            # Cookie 真实状态由后续的统一登录校验或 WS 重连确认。
+            is_manual_trigger = trigger_scene in ("manual", "manual_retry")
+            login_check_confirmed = False
+            cookie_actually_valid = False
+            if is_manual_trigger:
+                try:
+                    from .cookie_token_refresher import check_cookie_login
+                    login_check = await check_cookie_login(account_id)
+                    login_check_confirmed = login_check.confirmed
+                    cookie_actually_valid = login_check.authenticated
+                    logger.info(
+                        "手动求解失败后执行统一登录校验 accountId=%d "
+                        "confirmed=%s authenticated=%s code=%s",
+                        account_id, login_check.confirmed,
+                        login_check.authenticated, login_check.code,
+                    )
+                except Exception:
+                    logger.warning(
+                        "手动求解失败后登录校验异常 accountId=%d",
+                        account_id, exc_info=True,
+                    )
+
+            if login_check_confirmed:
+                # 登录校验已确认 Cookie 真实状态（check_cookie_login 已更新 DB + SSE）
+                # 此处仅补充包含滑块求解失败上下文的状态消息，避免覆盖已确认的状态码
+                if cookie_actually_valid:
+                    await _update_cookie_status_for_captcha(
+                        account_id,
+                        cookie_status=1,
+                        status_code="OK",
+                        status_message=(
+                            f"滑块求解失败，但经统一登录校验 Cookie 状态正常：{error_msg}"
+                            f"（不影响消息接收，可稍后重试或改为手动处理）"
+                        ),
+                    )
+                else:
+                    await _update_cookie_status_for_captcha(
+                        account_id,
+                        cookie_status=0,
+                        status_code="SESSION_EXPIRED",
+                        status_message=(
+                            f"滑块求解失败，且经统一登录校验确认 Cookie 已失效：{error_msg}"
+                            f"（建议重新扫码登录闲鱼账号）"
+                        ),
+                    )
+            else:
+                # 未执行登录校验（自动触发）或校验未确认（超时/上游不可用）：
+                # 回退到读取缓存状态，仅恢复 VERIFYING 之前的状态码并记录失败原因
+                try:
+                    async with async_session() as db:
+                        row = (await db.execute(
+                            text(
+                                "SELECT cookie_status FROM xianyu_account_auth "
+                                "WHERE account_id = :aid LIMIT 1"
+                            ),
+                            {"aid": account_id},
+                        )).first()
+                    current_cookie_status = int(row[0]) if row else 1
+                    if current_cookie_status == 1:
+                        # Cookie 仍可用：恢复 status_code="OK"，确保 WS 可正常连接
+                        await _update_cookie_status_for_captcha(
+                            account_id,
+                            cookie_status=1,
+                            status_code="OK",
+                            status_message=(
+                                f"滑块求解失败，但 Cookie 状态正常：{error_msg}"
+                                f"（可稍后重试或改为手动处理，不影响消息接收）"
+                            ),
+                        )
+                    else:
+                        # Cookie 原本就不可用：保持失效状态，仅更新失败原因
+                        await _update_cookie_status_for_captcha(
+                            account_id,
+                            cookie_status=0,
+                            status_code="SESSION_EXPIRED",
+                            status_message=(
+                                f"滑块求解失败：{error_msg}"
+                                f"（Cookie 可能已失效，建议重新扫码登录）"
+                            ),
+                        )
+                except Exception:
+                    logger.warning(
+                        "恢复 Cookie 状态失败 accountId=%d", account_id, exc_info=True,
+                    )
             await update_solve_record(
                 solve_record_id, status="fail", result="slider_fail",
                 error_message=error_msg,
                 retry_count=int(auto_solve_result.get("attempts") or 0),
                 duration_ms=int(auto_solve_result.get("durationMs") or 0),
                 screenshot_path=str(auto_solve_result.get("screenshotPath") or ""),
-                engine="Playwright",
+                engine=solve_engine,
             )
             await broadcast_captcha_solve(
                 account_id, account_name,

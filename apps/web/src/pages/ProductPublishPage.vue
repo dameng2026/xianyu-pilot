@@ -210,45 +210,7 @@
       </CardPanel>
 
       <CardPanel title="商品位置" style="margin-top:16px">
-        <div class="location-search">
-          <div class="location-input-wrap">
-            <input
-              v-model="locationKeyword"
-              placeholder="搜索小区/学校/商圈/商场等"
-              class="location-input"
-              @input="onLocationInput"
-              @focus="onLocationFocus"
-              @blur="onLocationBlur"
-            />
-            <div v-if="locationKeyword && showPoiDropdown" class="poi-dropdown">
-              <div
-                v-for="poi in poiList"
-                :key="poi.id"
-                class="poi-item"
-                @mousedown.prevent="selectPoi(poi)"
-              >
-                <div class="poi-name">{{ poi.name }}</div>
-                <div class="poi-addr">{{ poi.address || poi.district || '' }}</div>
-              </div>
-              <div v-if="!poiList.length && locationKeyword" class="poi-empty" :class="{ 'poi-empty-error': poiError }">
-                <span v-if="poiLoading">搜索中...</span>
-                <span v-else>{{ poiError || '未找到相关位置' }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-if="selectedPoi" class="selected-poi">
-            <div class="poi-badge">
-              <span class="poi-badge-name">{{ selectedPoi.name }}</span>
-              <span class="poi-badge-addr">{{ selectedPoi.address || selectedPoi.district || '' }}</span>
-              <button type="button" class="poi-badge-remove" aria-label="清除已选位置" @click="clearPoi">×</button>
-            </div>
-            <div class="poi-detail">
-              <span>经度：{{ selectedPoi.lng }}</span>
-              <span>纬度：{{ selectedPoi.lat }}</span>
-              <span>区域：{{ selectedPoi.pname }}{{ selectedPoi.cityname }}{{ selectedPoi.adname }}</span>
-            </div>
-          </div>
-        </div>
+        <PublishAddressCascader v-model="selectedAddress" clearable />
       </CardPanel>
 
       <CardPanel title="商品价格与规格" style="margin-top:16px">
@@ -343,7 +305,7 @@
       <CardPanel title="发布摘要" style="margin-top:16px">
         <div class="option-line"><span>闲鱼账号</span><b>{{ selectedAccount || '未选择' }}</b></div>
         <div class="option-line"><span>商品分类</span><b>{{ selectedCategoryPath || '未选择' }}</b></div>
-        <div class="option-line"><span>商品位置</span><b>{{ selectedPoi?.name || '未选择' }}</b></div>
+        <div class="option-line"><span>商品位置</span><b>{{ selectedAddress ? `${selectedAddress.prov} ${selectedAddress.city} ${selectedAddress.area}`.trim() : '未选择' }}</b></div>
         <div class="option-line"><span>总库存</span><b>{{ totalStock }}件</b></div>
         <div class="option-line"><span>运费模式</span><b>{{ shippingLabel }}</b></div>
       </CardPanel>
@@ -367,9 +329,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import CardPanel from '../components/CardPanel.vue'
 import AppButton from '../components/AppButton.vue'
 import ToggleSwitch from '../components/ToggleSwitch.vue'
+import PublishAddressCascader from '../components/PublishAddressCascader.vue'
 import { getAccounts, checkAccountAuth } from '../api/accounts.js'
 import { publishItem, autoCategory } from '../api/items.js'
-import { uploadImage, uploadImageFromUrl, amapInputTips } from '../api/misc.js'
+import { uploadImage, uploadImageFromUrl } from '../api/misc.js'
 import { runtimeConfig } from '../api/system.js'
 import { getGoods } from '../api/goods.js'
 import { getDeliverySources, applyDeliverySourceToGoods } from '../api/autoDelivery.js'
@@ -973,161 +936,12 @@ async function handleCancel() {
   if (ok) emit('navigate', 'products')
 }
 
-// ---- POI 位置搜索 ----
-const locationKeyword = ref('')
-const poiList = ref([])
-const poiLoading = ref(false)
-const showPoiDropdown = ref(false)
-const selectedPoi = ref(null)
-const poiError = ref('')
-let searchTimer = null
-let inhibitPoiClear = false
-// Each input owns one search version. A slow response for an older keyword
-// must never replace (or hide) the dropdown for the keyword now on screen.
-let poiSearchVersion = 0
-// 搜索结果缓存（避免相同关键词重复请求，触发高德 QPS 限制）
-const poiCache = new Map()
-// 上次请求时间戳，用于请求节流（高德免费 API QPS 限制约 3 次/秒）
-let lastPoiRequestTime = 0
-
-// 将高德 API 错误码翻译成中文友好提示
-function friendlyAmapError(error) {
-  if (!error) return ''
-  if (error.includes('CUQPS_HAS_EXCEEDED_THE_LIMIT')) {
-    return '搜索过于频繁，请稍等 2 秒后重试'
-  }
-  if (error.includes('INVALID_USER_KEY')) {
-    return '高德 API Key 无效，请检查系统设置中的配置'
-  }
-  if (error.includes('DAILY_QUERY_OVER_LIMIT')) {
-    return '高德 API 日调用次数已超限，请明天重试或升级配额'
-  }
-  return error
-}
-
-function onLocationInput() {
-  const searchVersion = ++poiSearchVersion
-  // 用户重新输入时清除已选 POI
-  if (inhibitPoiClear) { inhibitPoiClear = false; return }
-  selectedPoi.value = null
-  showPoiDropdown.value = true
-  if (searchTimer) clearTimeout(searchTimer)
-  if (!locationKeyword.value.trim()) {
-    poiList.value = []
-    poiError.value = ''
-    poiLoading.value = false
-    showPoiDropdown.value = false
-    return
-  }
-  poiLoading.value = true
-  poiError.value = ''
-  // 短防抖让输入后立即出现“搜索中”提示，同时仍通过请求节流避免高德 QPS 限制。
-  searchTimer = setTimeout(async () => {
-    const kw = locationKeyword.value.trim()
-    if (!kw || searchVersion !== poiSearchVersion) return
-
-    // 命中缓存直接返回（缓存 30 秒）
-    const cacheKey = kw + (runtime.defaultCity || '')
-    const cached = poiCache.get(cacheKey)
-    if (cached && Date.now() - cached.time < 30000) {
-      if (searchVersion === poiSearchVersion) {
-        poiList.value = cached.list
-        poiError.value = ''
-        poiLoading.value = false
-        showPoiDropdown.value = true
-      }
-      return
-    }
-
-    // 请求节流：距上次请求不足 1 秒则再等
-    const now = Date.now()
-    const wait = now - lastPoiRequestTime < 1000 ? (1000 - (now - lastPoiRequestTime)) : 0
-    if (wait > 0) {
-      await new Promise(r => setTimeout(r, wait))
-    }
-    if (searchVersion !== poiSearchVersion || kw !== locationKeyword.value.trim()) return
-    lastPoiRequestTime = Date.now()
-
-    try {
-      const params = { keywords: kw }
-      // 如果配置了默认城市，则限定城市范围，提高搜索精度
-      if (runtime.defaultCity) {
-        params.city = runtime.defaultCity
-      }
-      const res = await amapInputTips(params)
-      if (searchVersion !== poiSearchVersion || kw !== locationKeyword.value.trim()) return
-      const data = res?.data
-      // 兼容新旧响应格式：旧格式 data 为数组，新格式 data 为 { pois, error }
-      poiList.value = Array.isArray(data) ? data : (data?.pois || [])
-      const rawError = (!Array.isArray(data) && data?.error) ? data.error : ''
-      poiError.value = friendlyAmapError(rawError)
-      // 仅在成功获取到结果时缓存
-      if (poiList.value.length > 0) {
-        poiCache.set(cacheKey, { list: poiList.value, time: Date.now() })
-      }
-      showPoiDropdown.value = true
-    } catch {
-      if (searchVersion !== poiSearchVersion) return
-      if (import.meta.env.DEV) console.warn('[poiSearch] failed')
-      poiList.value = []
-      poiError.value = '位置搜索请求失败，请检查网络或联系管理员'
-    } finally {
-      if (searchVersion === poiSearchVersion) poiLoading.value = false
-    }
-  }, 250)
-}
-
-function onLocationFocus() {
-  if (selectedPoi.value) {
-    // 已选中 POI 时聚焦不清除
-    return
-  }
-  if (locationKeyword.value.trim()) {
-    showPoiDropdown.value = true
-  }
-}
-
-function onLocationBlur() {
-  // 延迟隐藏，让点击事件先触发
-  setTimeout(() => { showPoiDropdown.value = false }, 200)
-}
-
-function selectPoi(poi) {
-  // 解析 location
-  let lng = '', lat = ''
-  if (poi.location) {
-    const parts = poi.location.split(',')
-    lng = parts[0] || ''
-    lat = parts[1] || ''
-  }
-  selectedPoi.value = {
-    id: poi.id,
-    name: poi.name,
-    address: poi.address || '',
-    district: poi.district || '',
-    adcode: poi.adcode || '',
-    lng,
-    lat,
-    location: poi.location || '',
-    pname: poi.pname || '',
-    cityname: poi.cityname || '',
-    adname: poi.adname || '',
-    typecode: poi.typecode || '',
-  }
-  locationKeyword.value = poi.name
-  showPoiDropdown.value = false
-  // 阻止 v-model 触发的 onLocationInput 清除 selectedPoi
-  inhibitPoiClear = true
-}
-
-function clearPoi() {
-  selectedPoi.value = null
-  locationKeyword.value = ''
-  poiList.value = []
-}
+// ---- 商品位置（省/市/区 三级联动，与商业版发布逻辑保持一致）----
+// selectedAddress 由 PublishAddressCascader 维护，结构：
+// { prov, city, area, divisionId, gps, poiId, poiName, detail, source }
+const selectedAddress = ref(null)
 
 // ---- 请求封装 ----
-// 已改用 amapInputTips 统一请求，不再需要本地 request 封装
 
 const selectedAccount = computed(() => accountName(accounts.value.find(a => String(a.id) === String(form.accountId)) || {}))
 const displayPrice = computed(() => form.price || '0.00')
@@ -1157,7 +971,7 @@ const checks = computed(() => [
   { text: '商品描述已填写', ok: form.description.trim().length > 0 },
   { text: '已上传商品图片', ok: form.imageUrls.length > 0 },
   { text: '分类已选择', ok: !!selectedCategoryName.value },
-  { text: '商品位置已确认', ok: !!selectedPoi.value },
+  { text: '商品位置已确认', ok: !!selectedAddress.value },
   { text: '价格已填写', ok: Number(form.price) > 0 },
   { text: '库存数大于 0', ok: totalStock.value > 0 },
   { text: '自动发货货源已选择', ok: !autoDelivery.enabled || !!autoDelivery.sourceId },
@@ -1596,15 +1410,17 @@ async function submit() {
     const shippingMap = { free: true, fixed: false, none: false }
     const freeShipping = shippingMap[shippingMode.value] ?? true
 
-    // 构建位置数据
-    const locationData = selectedPoi.value ? {
-      prov: selectedPoi.value.pname || '',
-      city: selectedPoi.value.cityname || '',
-      area: selectedPoi.value.adname || '',
-      divisionId: selectedPoi.value.adcode || '',
-      gps: selectedPoi.value.location || '',
-      poiId: selectedPoi.value.id || '',
-      poiName: selectedPoi.value.name || '',
+    // 构建位置数据：使用三级联动选择的结构化地址，与商业版发布逻辑保持一致
+    const addr = selectedAddress.value
+    const locationData = addr ? {
+      prov: addr.prov || '',
+      city: addr.city || '',
+      area: addr.area || '',
+      divisionId: addr.divisionId || '',
+      gps: addr.gps || '',
+      poiId: addr.poiId || '',
+      poiName: addr.poiName || '',
+      detail: addr.detail || '',
     } : {
       prov: '',
       city: '',
@@ -1613,6 +1429,7 @@ async function submit() {
       gps: '',
       poiId: '',
       poiName: runtime.defaultAddress || '',
+      detail: '',
     }
 
     // 先发布到闲鱼，成功后再保存到本地数据库，避免发布失败时本地却显示商品
@@ -1695,7 +1512,7 @@ const hasDraftData = computed(() => {
     || form.price
     || form.stock
     || selectedCategoryName.value
-    || selectedPoi.value
+    || selectedAddress.value
     || autoDelivery.enabled)
 })
 
@@ -1716,8 +1533,8 @@ function serializeCurrentDraft() {
       path: selectedCategoryPath.value,
       pathIds: [level1Id.value, level2Id.value, level3Id.value].filter(Boolean),
     },
-    poi: selectedPoi.value ? JSON.parse(JSON.stringify(selectedPoi.value)) : null,
-    locationKeyword: locationKeyword.value || '',
+    poi: null,
+    location: selectedAddress.value ? JSON.parse(JSON.stringify(selectedAddress.value)) : null,
     autoDelivery: { enabled: autoDelivery.enabled, sourceId: autoDelivery.sourceId },
   }
 }
@@ -1752,10 +1569,23 @@ function restoreDraft(draft) {
       selectedCategoryName.value = cat.name || ''
       selectedCategoryPath.value = cat.path || ''
     }
-    // POI 位置恢复
-    if (draft.poi) {
-      selectedPoi.value = draft.poi
-      locationKeyword.value = draft.locationKeyword || draft.poi.name || ''
+    // 商品位置恢复（三级联动地址）
+    if (draft.location) {
+      selectedAddress.value = draft.location
+    } else if (draft.poi) {
+      // 兼容旧草稿：将旧版 POI 字段映射为结构化地址
+      const p = draft.poi
+      selectedAddress.value = {
+        prov: p.pname || '',
+        city: p.cityname || '',
+        area: p.adname || '',
+        divisionId: p.adcode || '',
+        gps: p.location || '',
+        poiId: p.id || '',
+        poiName: p.name || '',
+        detail: p.address || '',
+        source: 'legacy',
+      }
     }
     // 自动发货恢复
     const ad = draft.autoDelivery || {}
@@ -1789,8 +1619,7 @@ watch(
 )
 watch(shippingMode, scheduleAutoSave)
 watch(selectedCategoryName, scheduleAutoSave)
-watch(selectedPoi, scheduleAutoSave, { deep: true })
-watch(locationKeyword, scheduleAutoSave)
+watch(selectedAddress, scheduleAutoSave, { deep: true })
 // 自动发货状态变化时自动保存草稿
 watch(() => [autoDelivery.enabled, autoDelivery.sourceId], scheduleAutoSave)
 
@@ -1845,9 +1674,7 @@ async function clearAllData() {
     level3Id.value = null
     level2List.value = []
     level3List.value = []
-    selectedPoi.value = null
-    locationKeyword.value = ''
-    poiList.value = []
+    selectedAddress.value = null
     categoryKeyword.value = ''
     autoCategoryCandidates.value = []
     autoCategoryMessage.value = ''
@@ -2100,113 +1927,7 @@ onBeforeUnmount(() => {
 .shipping-item:not(:last-child) {
   border-bottom: 1px solid #f0f0f0;
 }
-/* ---- 位置搜索 ---- */
-.location-search {
-  position: relative;
-}
-.location-input-wrap {
-  position: relative;
-}
-.location-input {
-  width: 100%;
-  padding: 10px 14px;
-  border: 2px solid #e8e8e8;
-  border-radius: 10px;
-  font-size: 14px;
-  outline: none;
-  box-sizing: border-box;
-  transition: border-color 0.2s;
-}
-.location-input:focus {
-  border-color: var(--primary, #1677ff);
-}
-.poi-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  background: #fff;
-  border: 1px solid #e8e8e8;
-  border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-  max-height: 260px;
-  overflow-y: auto;
-  z-index: 100;
-  margin-top: 4px;
-}
-.poi-item {
-  padding: 10px 14px;
-  cursor: pointer;
-  border-bottom: 1px solid #f5f5f5;
-  transition: background 0.15s;
-}
-.poi-item:last-child {
-  border-bottom: none;
-}
-.poi-item:hover {
-  background: #f0f5ff;
-}
-.poi-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: #333;
-}
-.poi-addr {
-  font-size: 12px;
-  color: #999;
-  margin-top: 2px;
-}
-.poi-empty {
-  padding: 20px 14px;
-  text-align: center;
-  color: #999;
-  font-size: 13px;
-}
-.poi-empty-error {
-  color: #dc2626;
-}
-.selected-poi {
-  margin-top: 10px;
-}
-.poi-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: #e6f0ff;
-  border: 1px solid #b3d4ff;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
-}
-.poi-badge-name {
-  font-weight: 500;
-  color: var(--primary, #1677ff);
-}
-.poi-badge-addr {
-  color: #666;
-  font-size: 12px;
-}
-.poi-badge-remove {
-  cursor: pointer;
-  color: #999;
-  font-size: 16px;
-  line-height: 1;
-  margin-left: 4px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.poi-badge-remove:hover {
-  color: #ef4444;
-}
-.poi-detail {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-top: 6px;
-  font-size: 12px;
-  color: #888;
-}
+/* 商品位置改用 PublishAddressCascader 组件，原 .location-search / .poi-* 样式已移除 */
 .char-count {
   font-size: 12px;
   color: #999;
@@ -2505,33 +2226,7 @@ onBeforeUnmount(() => {
     padding: 4px 8px;
     font-size: 11px;
   }
-  /* 位置搜索输入框 */
-  .location-input {
-    padding: 8px 12px;
-    font-size: 13px;
-  }
-  .poi-dropdown {
-    max-height: 220px;
-  }
-  .poi-item {
-    padding: 8px 12px;
-  }
-  .poi-name {
-    font-size: 13px;
-  }
-  .poi-addr {
-    font-size: 11px;
-  }
-  .poi-detail {
-    flex-direction: column;
-    gap: 4px;
-    font-size: 11px;
-  }
-  .poi-badge {
-    flex-wrap: wrap;
-    padding: 6px 10px;
-    font-size: 12px;
-  }
+  /* 商品位置三级联动组件由 PublishAddressCascader 自带样式处理 */
   /* 自动分类提示与候选 */
   .auto-category-hint {
     flex-wrap: wrap;

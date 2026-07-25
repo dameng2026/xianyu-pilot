@@ -6,6 +6,7 @@ and start their WebSocket connections.
 """
 import asyncio
 import logging
+import time
 
 from sqlalchemy import text
 
@@ -49,6 +50,12 @@ async def _run_delivery_after_message_saved(account_id: int, msg: dict):
         payment_event = is_payment_message(msg)
         if not payment_event and not is_bargain_success_message(msg):
             return None
+        # 收到付款消息时立即异步同步该账号最新订单入库
+        if payment_event:
+            try:
+                _trigger_account_orders_sync(account_id)
+            except Exception:
+                logger.debug("触发账号订单同步异常，忽略", exc_info=True)
         async with async_session() as db:
             try:
                 outcome = await _process_delivery(db, account_id, msg)
@@ -78,6 +85,59 @@ async def _run_delivery_after_message_saved(account_id: int, msg: dict):
             type(exc).__name__,
         )
         raise
+
+
+# 付款事件触发账号订单同步的节流控制
+_order_sync_last_run: dict[int, float] = {}
+_order_sync_tasks: dict[int, asyncio.Task] = {}
+ORDER_SYNC_THROTTLE_SECONDS = 30
+
+
+def _trigger_account_orders_sync(account_id: int) -> None:
+    """异步触发账号最新订单同步，带节流去重。
+
+    背景：原设计仅依赖定时任务拉取闲鱼已售订单入库。用户自测下单后订单未同步，
+    根因是 WS 实时消息路径未触发订单同步，导致新订单最多要等定时任务才入库。
+
+    此函数在检测到"已付款/待发货"消息时立即异步拉取该账号最新订单入库：
+    - 用 asyncio.create_task 在后台执行，不阻塞消息回调与自动发货主流程
+    - 节流：同一账号 ORDER_SYNC_THROTTLE_SECONDS 秒内只触发一次
+    - 任何异常仅记录日志，不影响自动发货
+    """
+    if not account_id:
+        return
+
+    now = time.monotonic()
+    last_run = _order_sync_last_run.get(account_id, 0.0)
+    if now - last_run < ORDER_SYNC_THROTTLE_SECONDS:
+        return
+
+    existing_task = _order_sync_tasks.get(account_id)
+    if existing_task is not None and not existing_task.done():
+        return
+
+    _order_sync_last_run[account_id] = now
+    task = asyncio.create_task(_run_account_orders_sync(account_id))
+    _order_sync_tasks[account_id] = task
+
+
+async def _run_account_orders_sync(account_id: int) -> None:
+    """实际执行账号订单同步的后台任务。"""
+    try:
+        from .xianyu_order_sync import sync_orders_for_account
+
+        result = await sync_orders_for_account(account_id)
+        logger.info(
+            "WS 消息触发账号订单同步完成 accountId=%d result=%s",
+            account_id, result,
+        )
+    except Exception as exc:
+        logger.error(
+            "WS 消息触发账号订单同步失败 accountId=%d: %s",
+            account_id, exc, exc_info=True,
+        )
+    finally:
+        _order_sync_tasks.pop(account_id, None)
 
 
 def _normalize_xianyu_user_id(value: object) -> str:
@@ -401,6 +461,19 @@ async def on_message_callback(account_id: int, msg: dict) -> None:
 
     msg["_persistedMessageId"] = int(saved_message_id)
     msg["_sourceMessageUid"] = stable_chat_message_uid(msg, seller_external_uid)
+
+    # 声明回复处理：买家回复"确认/取消"时触发声明会话状态更新
+    try:
+        from .ws_statement_handler import handle_buyer_statement_reply
+
+        statement_result = await handle_buyer_statement_reply(account_id, msg)
+        if statement_result is not None:
+            logger.info(
+                "声明回复已处理 accountId=%d result=%s",
+                account_id, statement_result,
+            )
+    except Exception:
+        logger.debug("声明回复处理异常，忽略", exc_info=True)
 
     # This is only a latency hint. Durability comes from the rows committed in
     # the same transaction as the message, so a crash here cannot lose work.
