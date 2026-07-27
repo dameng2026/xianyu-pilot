@@ -65,8 +65,8 @@ sh ./start.sh          # Linux / macOS
 #### 步骤 1：克隆仓库
 
 ```bash
-git clone https://github.com/dameng2026/xianyupilot.git
-cd xianyupilot
+git clone https://github.com/dameng2026/XianYuPilo.git
+cd XianYuPilo
 ```
 
 如果未安装 git：
@@ -156,8 +156,8 @@ docker compose version
 #### 步骤 2：克隆仓库
 
 ```bash
-git clone https://github.com/dameng2026/xianyupilot.git
-cd xianyupilot
+git clone https://github.com/dameng2026/XianYuPilo.git
+cd XianYuPilo
 ```
 
 #### 步骤 3：运行初始化向导
@@ -213,8 +213,8 @@ docker compose ps
 打开 PowerShell 或 CMD：
 
 ```powershell
-git clone https://github.com/dameng2026/xianyupilot.git
-cd xianyupilot
+git clone https://github.com/dameng2026/XianYuPilo.git
+cd XianYuPilo
 ```
 
 如果未安装 git，从 [git-scm.com](https://git-scm.com/download/win) 下载安装。
@@ -279,8 +279,8 @@ $env:ADMIN_PASSWORD="你的强密码"; .\start.bat
 #### 步骤 2：克隆仓库
 
 ```powershell
-git clone https://github.com/dameng2026/xianyupilot.git
-cd xianyupilot
+git clone https://github.com/dameng2026/XianYuPilo.git
+cd XianYuPilo
 ```
 
 #### 步骤 3：运行初始化向导
@@ -748,7 +748,7 @@ tar -czf secrets_backup_$(date +%Y%m%d).tar.gz secrets/ .env
 crontab -e
 
 # 每天凌晨 3 点备份
-0 3 * * * cd /path/to/xianyupilot && docker compose exec -T mysql sh -c 'MYSQL_PWD="$(cat /run/secrets/mysql_root_password)" mysqldump -uroot xianyu_opensource' > /backup/xianyu_$(date +\%Y\%m\%d).sql
+0 3 * * * cd /path/to/XianYuPilo && docker compose exec -T mysql sh -c 'MYSQL_PWD="$(cat /run/secrets/mysql_root_password)" mysqldump -uroot xianyu_opensource' > /backup/xianyu_$(date +\%Y\%m\%d).sql
 ```
 
 ---
@@ -826,6 +826,6 @@ sudo apt-get autoremove -y
 
 ### 技术支持
 
-- **GitHub Issues**：[提交问题](https://github.com/dameng2026/xianyupilot/issues)
+- **GitHub Issues**：[提交问题](https://github.com/dameng2026/XianYuPilo/issues)
 - **查看日志**：`python3 scripts/production_ops.py --env-file .env logs --tail 500`
 - **查看版本**：进入"关于我们"页面查看当前版本和更新信息

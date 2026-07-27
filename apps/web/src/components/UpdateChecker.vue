@@ -188,7 +188,7 @@ const scriptTip = computed(() => {
 
 const githubReleaseFallbackUrl = computed(() => {
   if (info.value.offlineBackup.releaseUrl) return info.value.offlineBackup.releaseUrl
-  return 'https://github.com/xianyu-assistant-opensource/xianyu-assistant-opensource/releases'
+  return 'https://github.com/dameng2026/XianYuPilo/releases'
 })
 
 function formatDate(value) {

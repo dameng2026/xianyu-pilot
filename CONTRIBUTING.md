@@ -23,8 +23,8 @@
 1. 克隆仓库并安装依赖：
 
 ```bash
-git clone <repo-url>
-cd xianyu-assistant-opensource
+git clone https://github.com/dameng2026/XianYuPilo.git
+cd XianYuPilo
 cp .env.example .env
 # 编辑 .env，填写数据库密码等必填项
 ```
