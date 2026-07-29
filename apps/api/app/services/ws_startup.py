@@ -475,6 +475,12 @@ async def on_message_callback(account_id: int, msg: dict) -> None:
     except Exception:
         logger.debug("声明回复处理异常，忽略", exc_info=True)
 
+    # 人工 OUT 消息检测：卖家手动发送消息时暂停该会话的自动回复（商业版同步）
+    try:
+        await _pause_auto_reply_for_manual_outbound(account_id, msg)
+    except Exception:
+        logger.debug("人工OUT检测异常，忽略", exc_info=True)
+
     # This is only a latency hint. Durability comes from the rows committed in
     # the same transaction as the message, so a crash here cannot lose work.
     notify_message_automation_worker()
@@ -574,3 +580,73 @@ async def stop_all() -> None:
     await ai_auto_reply_batcher.shutdown()
     await ws_manager.stop_all()
     logger.info("所有 WebSocket 连接已停止")
+
+
+# ==================== 商业版同步：人工 OUT 消息检测 ====================
+
+
+async def _pause_auto_reply_for_manual_outbound(account_id: int, msg: dict) -> None:
+    """人工 OUT 消息检测：卖家手动发送消息时暂停该会话的自动回复。
+
+    触发条件：
+    - direction = "OUT"（卖家发出的消息）
+    - is_auto_reply = 0（非 AI 自动回复，即人工手动发送）
+
+    暂停效果：
+    - xianyu_conversation.auto_reply_paused = 1
+    - xianyu_conversation.last_manual_reply_at = <当前时间戳>
+
+    自动恢复条件（由 ai_auto_reply_policy 评估，不在此处理）：
+    - 距上次人工回复 > 1 分钟，买家发新消息时自动恢复
+    - 买家发"开启自动回复"指令时自动恢复（仅当未被用户手动关闭）
+
+    注意：is_auto_reply=1 的消息不触发暂停（AI 回复不影响暂停状态）。
+    """
+    direction = str(msg.get("direction") or "IN").upper()
+    if direction != "OUT":
+        return
+
+    is_auto_reply = bool(msg.get("isAutoReply") or msg.get("is_auto_reply") or 0)
+    if is_auto_reply:
+        return
+
+    s_id = str(msg.get("sId") or msg.get("sid") or "").strip()
+    if not s_id:
+        return
+
+    # 归一化 sid：去掉 @goofish 后缀
+    normalized_sid = s_id.removesuffix("@goofish")
+
+    import time as _time
+    current_ts = int(_time.time() * 1000)
+
+    try:
+        async with async_session() as db:
+            # 更新会话的 auto_reply_paused = 1 和 last_manual_reply_at
+            result = await db.execute(
+                text("""
+                    UPDATE xianyu_conversation
+                    SET auto_reply_paused = 1,
+                        last_manual_reply_at = :ts,
+                        updated_time = NOW()
+                    WHERE account_id = :account_id
+                      AND s_id = :sid
+                      AND deleted = 0
+                """),
+                {
+                    "account_id": account_id,
+                    "sid": normalized_sid,
+                    "ts": current_ts,
+                },
+            )
+            await db.commit()
+            if result.rowcount > 0:
+                logger.info(
+                    "人工OUT消息触发自动回复暂停 accountId=%d sid=%s",
+                    account_id, normalized_sid[:32],
+                )
+    except Exception:
+        logger.debug(
+            "人工OUT检测数据库更新失败 accountId=%d",
+            account_id,
+        )

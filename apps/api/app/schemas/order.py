@@ -1,4 +1,4 @@
-from typing import Optional, List, Any, Literal
+﻿from typing import Optional, List, Any, Literal
 from pydantic import ConfigDict, Field, field_validator
 from ..core.camel import CamelModel
 
@@ -14,6 +14,17 @@ class OrderQueryReqDTO(CamelModel):
 class ConfirmShipmentReqDTO(CamelModel):
     xianyu_account_id: int
     order_id: str
+
+
+class ConfirmFreeshippingReqDTO(CamelModel):
+    """免拼发货请求 DTO（小刀订单专用）。
+
+    必须提供 item_id 和 buyer_id，闲鱼免拼接口要求这两个字段为整数类型。
+    """
+    xianyu_account_id: int
+    order_id: str
+    item_id: Any = None
+    buyer_id: Any = None
 
 
 class SoldOrderSyncReqDTO(CamelModel):

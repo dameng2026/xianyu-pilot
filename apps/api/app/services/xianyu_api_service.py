@@ -1,4 +1,4 @@
-"""
+﻿"""
 闲鱼 H5 API 调用与签名服务。
 
 提供通用签名和API调用能力，参考文档的 XianyuApiCallUtils / XianyuSignUtils。
@@ -944,3 +944,147 @@ def _legacy_fetch_conversation_user_info(
             "nick": user_info.get("nick") or data_payload.get("nick") or "",
         },
     }
+
+# ==================== 确认发货（商业版同步） ====================
+
+
+def _normalize_numeric_id(value: Any) -> Optional[int]:
+    """将可能带 @goofish 后缀或为字符串的 ID 整饬为整数，失败返回 None。"""
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    if "@" in text_value:
+        text_value = text_value.split("@", 1)[0]
+    try:
+        return int(text_value)
+    except (ValueError, TypeError):
+        return None
+
+
+def confirm_freeshipping(
+    account_id: int,
+    order_id: str,
+    item_id: Any,
+    buyer_id: Any,
+) -> Optional[dict]:
+    """调用闲鱼 MTOP 免拼发货接口（小刀订单专用，商业版同步）。
+
+    API: mtop.idle.groupon.activity.seller.freeshipping
+    请求体: {"bizOrderId":"<order_id>", "itemId":<item_id>, "buyerId":<buyer_id>}
+
+    与原版 freeshipping_order 相比的增强：
+    - 使用 _normalize_numeric_id 处理 @goofish 后缀
+    - 返回更详细的错误信息（account_id / order_id / ship_method / idempotent 标记）
+    - 日志更详细
+
+    已发货（ORDER_ALREADY_DELIVERY / 已发货成功）视为幂等成功。
+    """
+    if not order_id:
+        return {"success": False, "error": "MISSING_ORDER_ID", "message": "订单号为空"}
+
+    numeric_item_id = _normalize_numeric_id(item_id)
+    numeric_buyer_id = _normalize_numeric_id(buyer_id)
+    if numeric_item_id is None or numeric_buyer_id is None:
+        return {
+            "success": False,
+            "error": "INVALID_ITEM_OR_BUYER_ID",
+            "message": "商品ID或买家ID无法解析为整数",
+            "account_id": account_id,
+            "order_id": order_id,
+        }
+
+    auth = _get_account_auth(account_id)
+    if not auth:
+        return {
+            "success": False,
+            "error": "ACCOUNT_AUTH_NOT_FOUND",
+            "message": f"未找到账号 {account_id} 的认证信息",
+        }
+
+    cookie_str = _decrypt_value(auth.get("encrypted_cookie"))
+    if not cookie_str:
+        return {
+            "success": False,
+            "error": "COOKIE_EMPTY",
+            "message": f"账号 {account_id} 的 Cookie 为空",
+        }
+
+    api_name = "mtop.idle.groupon.activity.seller.freeshipping"
+    # itemId / buyerId 在闲鱼接口中为整数类型（不带引号），bizOrderId 为字符串
+    data_str = json.dumps(
+        {
+            "bizOrderId": str(order_id),
+            "itemId": numeric_item_id,
+            "buyerId": numeric_buyer_id,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    result = _post_mtop_with_token_retry(account_id, cookie_str, api_name, data_str, timeout=20)
+
+    if result.get("success"):
+        logger.info(
+            "免拼发货成功: accountId=%d orderId=%s itemId=%s buyerId=%s",
+            account_id, order_id, numeric_item_id, numeric_buyer_id,
+        )
+        return {
+            "success": True,
+            "account_id": account_id,
+            "order_id": order_id,
+            "ship_method": "freeshipping",
+        }
+
+    # 已发货视为成功（幂等）
+    ret = result.get("ret") or []
+    ret_str = " ".join(ret) if isinstance(ret, list) else str(ret)
+    if "ORDER_ALREADY_DELIVERY" in ret_str or "已发货" in ret_str:
+        logger.info(
+            "订单已发货（免拼幂等成功）: accountId=%d orderId=%s",
+            account_id, order_id,
+        )
+        return {
+            "success": True,
+            "account_id": account_id,
+            "order_id": order_id,
+            "ship_method": "freeshipping",
+            "idempotent": True,
+        }
+
+    logger.warning(
+        "免拼发货失败: accountId=%d orderId=%s error=%s ret=%s",
+        account_id, order_id, result.get("error", ""), ret_str[:200],
+    )
+    return {
+        "success": False,
+        "error": result.get("error") or "FREESHIPPING_FAILED",
+        "message": result.get("error") or "免拼发货失败",
+        "ret": ret,
+        "account_id": account_id,
+        "order_id": order_id,
+    }
+
+
+def confirm_order_shipment(
+    account_id: int,
+    order_id: str,
+    is_bargain: bool = False,
+    item_id: Any = None,
+    buyer_id: Any = None,
+) -> Optional[dict]:
+    """统一确认发货调度：小刀订单走免拼发货，普通订单走虚拟发货（商业版同步）。
+
+    Args:
+        account_id: 闲鱼账号ID
+        order_id: 闲鱼订单ID（external_order_id）
+        is_bargain: 是否小刀订单。True 时必须提供 item_id 和 buyer_id
+        item_id: 商品ID（小刀订单免拼发货必填）
+        buyer_id: 买家ID（小刀订单免拼发货必填）
+
+    Returns:
+        {"success": True, ...} 或 {"success": False, "error": "...", ...}
+    """
+    if is_bargain:
+        return confirm_freeshipping(account_id, order_id, item_id, buyer_id)
+    return confirm_shipment(account_id, order_id)
+

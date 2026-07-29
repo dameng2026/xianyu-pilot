@@ -321,9 +321,11 @@ python scripts/production_ops.py --env-file .env restart api web
 
 </div>
 
-## 💬 微信交流群
+## 💬 交流群
 
-欢迎加入微信交流群，与更多闲鱼卖家和开发者一起交流使用心得、反馈问题、获取最新动态。
+欢迎加入交流群，与更多闲鱼卖家和开发者一起交流使用心得、反馈问题、获取最新动态。以下提供微信群与 QQ 群两种加入方式，按你的习惯选择即可。
+
+### 微信交流群
 
 <div align="center">
 
@@ -331,7 +333,29 @@ python scripts/production_ops.py --env-file .env restart api web
 
 </div>
 
-> 📌 **二维码失效？** 若上方微信群二维码已过期或无法扫码，请添加微信 **`JiShu0724`**（备注「闲鱼助手」），我们会邀请你进群。
+### QQ 交流群
+
+<div align="center">
+
+![QQ群](screenshots/qq-group.png)
+
+</div>
+
+> 📌 **二维码失效？** 若上方二维码已过期或无法扫码，请添加微信 **`JiShu0724`**（备注「闲鱼助手」），我们会邀请你进群。
+
+---
+
+## 📞 微信客服
+
+如需一对一咨询、技术支持或商务合作，可扫描下方微信客服二维码添加好友：
+
+<div align="center">
+
+![微信客服](screenshots/wechat-kefu.png)
+
+</div>
+
+> 📌 **二维码失效？** 若上方二维码已过期或无法扫码，请直接添加微信 **`JiShu0724`**（备注「闲鱼助手」）。
 
 ---
 

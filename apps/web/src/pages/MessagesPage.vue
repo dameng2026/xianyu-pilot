@@ -1325,7 +1325,7 @@ function stableGeneratedMessageId(item, rawContent = '') {
 
 function messageIdentity(message) {
   if (!message) return ''
-  const pnmId = String(message.pnmId || message.messageUid || message.messageId || '').trim()
+  const pnmId = String(message.pnmId || message.pnm_id || message.messageUid || message.message_uid || message.messageId || '').trim()
   if (pnmId) return `pnm:${pnmId}`
   const id = String(message.id || '').trim()
   if (id && !id.startsWith('temp_') && !id.startsWith('gen_')) return `id:${id}`

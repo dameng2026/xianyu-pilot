@@ -24,8 +24,8 @@ function getHeader(headers, name) {
 }
 
 function requestIdOf(config, response) {
-  return response?.headers?.['x-request-id']
-    || getHeader(config?.headers, 'X-Request-Id')
+  return getHeader(config?.headers, 'X-Request-Id')
+    || response?.headers?.['x-request-id']
     || response?.data?.requestId
     || response?.data?.data?.requestId
 }

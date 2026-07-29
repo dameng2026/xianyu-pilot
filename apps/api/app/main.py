@@ -249,13 +249,19 @@ async def _readiness_snapshot() -> tuple[bool, dict[str, str]]:
         "database": "unavailable",
         "schemaMigration": "unavailable",
     }
-    try:
-        async with asyncio.timeout(settings.mysql_connect_timeout_seconds + 2):
-            async with engine.connect() as connection:
-                await connection.execute(text("SELECT 1"))
+
+    async def _db_probe() -> None:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
         components["database"] = "ok"
         schema_status = await get_schema_status()
         components["schemaMigration"] = "ok" if schema_status.current else "pending"
+
+    try:
+        await asyncio.wait_for(
+            _db_probe(),
+            timeout=settings.mysql_connect_timeout_seconds + 2,
+        )
     except Exception:
         logger.warning("Readiness database probe failed", exc_info=True)
 

@@ -36,6 +36,11 @@ DELIVERY_TIMING_AFTER_PAYMENT = "after_payment"
 _SAFE_LOG_CODE_RE = re.compile(r"[^a-z0-9_]+")
 _MAX_REALTIME_QUANTITY = 100
 
+# 付款触发节流：防止闲鱼 WS 周期性推送付款消息导致重复触发发货（事故级 Bug 修复）
+# key: f"{account_id}:{source_event_id}"，value: 上次触发时间戳
+_payment_trigger_throttle: dict[str, float] = {}
+_PAYMENT_THROTTLE_SECONDS = 60  # 同一 account_id + pnm_id 在 60 秒内只触发一次
+
 # 付款事件正向关键词：reminder 文本命中任一即视为已付款
 _PAYMENT_POSITIVE_KEYWORDS = (
     "等待你发货",
@@ -330,6 +335,15 @@ async def handle_incoming_message_for_delivery(
         )
         return
 
+    # 付款兜底节流：同一 account_id + pnm_id 在 60 秒内只触发一次，防止 WS 周期性推送死循环
+    if payment_event and _should_skip_payment_trigger(account_id, msg):
+        logger.debug(
+            "付款触发节流跳过 accountId=%d pnmId=%s（60秒内已触发）",
+            account_id,
+            str(msg.get("pnmId") or msg.get("pnm_id") or "")[:32],
+        )
+        return
+
     logger.info(
         "Realtime delivery event accepted accountId=%d payment=%s bargain=%s",
         account_id, payment_event, bargain_event,
@@ -415,6 +429,24 @@ async def _process_delivery(
         session_id=session_id,
         item_id=item_id,
     )
+
+    # 数据库层去重第一道防线：查询 delivery_record 表（包括失败记录 1 小时窗口）
+    # 防止 event_key 不同但实际是同一发货场景的重复触发（事故级 Bug 修复）
+    if await _has_existing_realtime_delivery(db, account_id, session_id, item_id, peer_id):
+        logger.info(
+            "数据库层去重命中，跳过发货 accountId=%d orderId=%s itemId=%s sid=%s",
+            account_id, external_order_id, item_id, session_id[:32],
+        )
+        return None
+
+    # 数据库层去重第二道防线：xianyu_trade_order.order_status=3（已发货）
+    if external_order_id and await _check_order_already_shipped(db, account_id, external_order_id):
+        logger.info(
+            "订单已发货（order_status=3），跳过发货 accountId=%d orderId=%s",
+            account_id, external_order_id,
+        )
+        return None
+
     rule = await resolve_realtime_delivery_rule(
         db,
         account_id=account_id,
@@ -1036,3 +1068,143 @@ async def _trigger_delivery_for_confirmed_statement(
         "pnmId": f"statement-confirm:{session_id_stmt}",
     }
     await _process_delivery(db, account_id, fake_msg)
+
+
+# ==================== 商业版同步：数据库层去重保护 ====================
+
+
+async def _has_existing_realtime_delivery(
+    db: AsyncSession,
+    account_id: int,
+    session_id: str,
+    item_id: str,
+    peer_id: str,
+) -> bool:
+    """数据库层去重：查询 delivery_record 表判断是否已有发货记录。
+
+    双层时间窗口（事故级 Bug 修复）：
+    - 成功记录（status IN 1,2）：10 分钟窗口内视为重复
+    - 失败记录（status=3）：1 小时窗口内视为重复，避免 WS 周期性推送导致死循环
+
+    Args:
+        db: 数据库会话
+        account_id: 闲鱼账号ID
+        session_id: 会话ID（已归一化去 @goofish 后缀）
+        item_id: 商品ID
+        peer_id: 买家ID
+
+    Returns:
+        True 表示已有发货记录，应跳过本次发货
+    """
+    if not session_id or not item_id or not peer_id:
+        return False
+
+    # 归一化 sid：去掉 @goofish 后缀
+    normalized_sid = str(session_id).removesuffix("@goofish")
+
+    # 查询 delivery_record 表，按 receiver_info JSON 中的 sid/buyerUserId/xyGoodsId 匹配
+    # 双层时间窗口：成功记录 10 分钟 / 失败记录 1 小时
+    query = text("""
+        SELECT COUNT(*) AS cnt
+        FROM delivery_record
+        WHERE account_id = :account_id
+          AND deleted = 0
+          AND delivery_timing = 'after_payment'
+          AND (
+            (status IN (1, 2) AND created_time >= DATE_SUB(NOW(), INTERVAL 10 MINUTE))
+            OR
+            (status = 3 AND created_time >= DATE_SUB(NOW(), INTERVAL 1 HOUR))
+          )
+          AND (
+            JSON_EXTRACT(receiver_info, '$.sid') = :sid
+            OR JSON_EXTRACT(receiver_info, '$.sId') = :sid
+          )
+          AND JSON_EXTRACT(receiver_info, '$.xyGoodsId') = :item_id
+          AND (
+            JSON_EXTRACT(receiver_info, '$.buyerUserId') = :peer_id
+            OR JSON_EXTRACT(receiver_info, '$.buyerId') = :peer_id
+          )
+    """)
+
+    try:
+        result = await db.execute(query, {
+            "account_id": account_id,
+            "sid": normalized_sid,
+            "item_id": str(item_id),
+            "peer_id": str(peer_id),
+        })
+        count = result.scalar() or 0
+        return count > 0
+    except Exception as exc:
+        logger.warning(
+            "数据库层去重查询失败，降级为不跳过 accountId=%d errorType=%s",
+            account_id,
+            type(exc).__name__,
+        )
+        return False
+
+
+async def _check_order_already_shipped(
+    db: AsyncSession,
+    account_id: int,
+    external_order_id: str,
+) -> bool:
+    """第二道防线：检查 xianyu_trade_order.order_status 是否为 3（已发货）。
+
+    即使 delivery_record 无记录，若订单已标记为已发货，也跳过本次发货。
+    """
+    if not external_order_id:
+        return False
+    query = text("""
+        SELECT order_status
+        FROM xianyu_trade_order
+        WHERE account_id = :account_id
+          AND external_order_id = :order_id
+          AND deleted = 0
+        LIMIT 1
+    """)
+    try:
+        result = await db.execute(query, {
+            "account_id": account_id,
+            "order_id": str(external_order_id),
+        })
+        row = result.fetchone()
+        if row and row[0] == 3:
+            return True
+        return False
+    except Exception as exc:
+        logger.warning(
+            "订单已发货检查失败，降级为不跳过 accountId=%d orderId=%s errorType=%s",
+            account_id, external_order_id, type(exc).__name__,
+        )
+        return False
+
+
+def _should_skip_payment_trigger(account_id: int, msg: dict) -> bool:
+    """付款兜底节流：同一 account_id + pnm_id 在 60 秒内只触发一次。
+
+    防止闲鱼 WS 周期性推送付款消息（同一付款事件不同消息）导致重复触发发货。
+    """
+    pnm_id = str(msg.get("pnmId") or msg.get("pnm_id") or "").strip()
+    if not pnm_id:
+        # 没有 pnm_id 时无法节流，允许触发（由其他去重机制防护）
+        return False
+
+    throttle_key = f"{account_id}:{pnm_id}"
+    now = time.time()
+    last_trigger = _payment_trigger_throttle.get(throttle_key)
+    if last_trigger and (now - last_trigger) < _PAYMENT_THROTTLE_SECONDS:
+        return True
+
+    # 记录本次触发时间
+    _payment_trigger_throttle[throttle_key] = now
+
+    # 清理过期条目（超过 5 分钟的），避免字典无限增长
+    expired_keys = [
+        k for k, v in _payment_trigger_throttle.items()
+        if (now - v) > 300
+    ]
+    for k in expired_keys:
+        _payment_trigger_throttle.pop(k, None)
+
+    return False

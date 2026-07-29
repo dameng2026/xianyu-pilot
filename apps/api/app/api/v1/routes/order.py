@@ -1,3 +1,4 @@
+﻿import asyncio
 import datetime
 import logging
 import math
@@ -10,12 +11,15 @@ from ....core.database import get_db
 from ....core.response import ResultObject
 from ....models.entities import XianyuTradeOrder
 from ....schemas.order import (
+    ConfirmFreeshippingReqDTO,
     ConfirmShipmentReqDTO,
     OrderListData,
     OrderQueryReqDTO,
     OrderVO,
     SoldOrderSyncReqDTO,
 )
+from ....services.xianyu_api_service import confirm_order_shipment, confirm_freeshipping
+from ....services.xianyu_order_sync import sync_orders_for_account
 from ..deps import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -89,6 +93,13 @@ async def confirm_shipment(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    """确认发货（同步商业版能力：调用闲鱼 API 真实确认发货）。
+
+    - 普通订单走 mtop.taobao.idle.logistic.consign.dummy（无物流虚拟发货）
+    - 小刀订单（is_bargain=1）走 mtop.idle.groupon.activity.seller.freeshipping（免拼发货）
+    - 已发货（ORDER_ALREADY_DELIVERY）视为幂等成功
+    - 成功后更新本地 order_status=3, ship_time=now
+    """
     try:
         if not req.order_id:
             return ResultObject.failed("订单ID不能为空")
@@ -105,12 +116,101 @@ async def confirm_shipment(
         if order.order_status == 3:
             return ResultObject.success("订单已确认发货，无需重复操作")
 
+        # 根据是否小刀订单选择发货方式
+        is_bargain = bool(order.is_bargain)
+        api_result = await asyncio.to_thread(
+            confirm_order_shipment,
+            account_id=req.xianyu_account_id,
+            order_id=req.order_id,
+            is_bargain=is_bargain,
+            item_id=order.item_id,
+            buyer_id=order.buyer_id,
+        )
+
+        if not api_result or not api_result.get("success"):
+            error_msg = (api_result or {}).get("message") or (api_result or {}).get("error") or "闲鱼确认发货失败"
+            logger.warning(
+                "确认发货失败 accountId=%d orderId=%s isBargain=%s error=%s",
+                req.xianyu_account_id, req.order_id, is_bargain, error_msg,
+            )
+            return ResultObject.failed(error_msg)
+
+        # 闲鱼 API 成功后更新本地状态
         order.order_status = 3
         order.ship_time = datetime.datetime.now()
         await db.commit()
-        return ResultObject.success("确认发货成功（仅更新本地状态）")
+
+        ship_method = api_result.get("ship_method", "virtual" if not is_bargain else "freeshipping")
+        idempotent = "（已发货幂等）" if api_result.get("idempotent") else ""
+        logger.info(
+            "确认发货成功 accountId=%d orderId=%s shipMethod=%s%s",
+            req.xianyu_account_id, req.order_id, ship_method, idempotent,
+        )
+        return ResultObject.success(f"确认发货成功（{ship_method}）{idempotent}")
     except Exception as e:
         logger.error("确认发货失败", exc_info=True)
+        return ResultObject.internal_error()
+
+
+@router.post("/confirmFreeshipping", response_model=ResultObject[str])
+async def confirm_freeshipping_endpoint(
+    req: ConfirmFreeshippingReqDTO,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """免拼发货（小刀订单专用）。
+
+    调用闲鱼 mtop.idle.groupon.activity.seller.freeshipping 接口。
+    必须提供 item_id 和 buyer_id（闲鱼接口要求整数类型）。
+    """
+    try:
+        if not req.order_id:
+            return ResultObject.failed("订单ID不能为空")
+        if req.item_id is None or req.buyer_id is None:
+            return ResultObject.failed("免拼发货必须提供商品ID和买家ID")
+
+        result = await db.execute(
+            select(XianyuTradeOrder).where(
+                XianyuTradeOrder.account_id == req.xianyu_account_id,
+                XianyuTradeOrder.external_order_id == req.order_id,
+                XianyuTradeOrder.deleted == 0,
+            )
+        )
+        order = result.scalar_one_or_none()
+        if not order:
+            return ResultObject.failed("订单不存在")
+        if order.order_status == 3:
+            return ResultObject.success("订单已确认发货，无需重复操作")
+
+        api_result = await asyncio.to_thread(
+            confirm_freeshipping,
+            account_id=req.xianyu_account_id,
+            order_id=req.order_id,
+            item_id=req.item_id,
+            buyer_id=req.buyer_id,
+        )
+
+        if not api_result or not api_result.get("success"):
+            error_msg = (api_result or {}).get("message") or (api_result or {}).get("error") or "免拼发货失败"
+            logger.warning(
+                "免拼发货失败 accountId=%d orderId=%s itemId=%s buyerId=%s error=%s",
+                req.xianyu_account_id, req.order_id, req.item_id, req.buyer_id, error_msg,
+            )
+            return ResultObject.failed(error_msg)
+
+        order.order_status = 3
+        order.ship_time = datetime.datetime.now()
+        order.is_bargain = 1
+        await db.commit()
+
+        idempotent = "（已发货幂等）" if api_result.get("idempotent") else ""
+        logger.info(
+            "免拼发货成功 accountId=%d orderId=%s%s",
+            req.xianyu_account_id, req.order_id, idempotent,
+        )
+        return ResultObject.success(f"免拼发货成功{idempotent}")
+    except Exception as e:
+        logger.error("免拼发货失败", exc_info=True)
         return ResultObject.internal_error()
 
 
@@ -120,10 +220,39 @@ async def sync_sold_orders(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    """同步闲鱼已售订单（同步商业版能力：调用真实订单同步流程）。
+
+    通过 mtop.taobao.idle.trade.merchant.sold.get 分页拉取远程订单并 upsert 到本地。
+    """
     try:
+        if not req.xianyu_account_id:
+            return ResultObject.failed("账号ID不能为空")
+
+        result = await sync_orders_for_account(account_id=req.xianyu_account_id)
+
+        if not result.get("success"):
+            error_msg = result.get("error") or "订单同步失败"
+            error_code = result.get("errorCode", "ORDER_SYNC_FAILED")
+            logger.warning(
+                "订单同步失败 accountId=%d errorCode=%s error=%s",
+                req.xianyu_account_id, error_code, error_msg,
+            )
+            return ResultObject.failed(error_msg)
+
+        logger.info(
+            "订单同步成功 accountId=%d total=%d inserted=%d updated=%d failed=%d",
+            req.xianyu_account_id,
+            result.get("total", 0),
+            result.get("inserted", 0),
+            result.get("updated", 0),
+            result.get("failed", 0),
+        )
         return ResultObject.success({
             "message": "同步成功",
-            "synced_count": 0,
+            "synced_count": result.get("total", 0),
+            "inserted": result.get("inserted", 0),
+            "updated": result.get("updated", 0),
+            "failed": result.get("failed", 0),
         })
     except Exception as e:
         logger.error("同步鱼小铺卖家订单列表失败", exc_info=True)

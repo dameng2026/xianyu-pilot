@@ -4,6 +4,7 @@ name: Build and Publish Docker Images
 # 并在配置阿里云 ACR 凭证后同步镜像到国内 registry（国内拉取加速）。
 # 也可在 Actions 页面手动触发。镜像标签：latest + git 短 SHA。
 # 多架构（linux/amd64 + linux/arm64）manifest，覆盖 x86 服务器与 Apple Silicon Mac。
+# 注意：crawler 基于 Playwright 官方镜像，仅支持 linux/amd64。
 #
 # 阿里云 ACR 个人版同步（可选）：
 #   在仓库 Settings → Variables 配置：
@@ -36,10 +37,13 @@ jobs:
         include:
           - component: api
             context: ./apps/api
+            platforms: linux/amd64,linux/arm64
           - component: web
             context: ./apps/web
+            platforms: linux/amd64,linux/arm64
           - component: crawler
             context: ./apps/crawler
+            platforms: linux/amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,7 +75,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms }}
           push: true
           tags: |
             ghcr.io/${{ env.IMAGE_NAMESPACE }}/xianyu-assistant-${{ matrix.component }}:latest

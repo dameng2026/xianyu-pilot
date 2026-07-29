@@ -642,6 +642,7 @@ function exportDiagnostics() {
 .community-card.blue:hover { border-color: #bfd5ff; }
 .community-card.orange:hover { border-color: #ffd9ac; }
 .community-card.green:hover { border-color: #bee8d0; }
+.community-card.violet:hover { border-color: #d6c2ff; }
 .community-card-body {
   flex: 1;
   min-width: 0;
@@ -673,6 +674,10 @@ function exportDiagnostics() {
 .community-card.green .community-label {
   background: #ebf8f0;
   color: #14814e;
+}
+.community-card.violet .community-label {
+  background: #f1e8ff;
+  color: #7c3aed;
 }
 .community-head b {
   color: #13213d;

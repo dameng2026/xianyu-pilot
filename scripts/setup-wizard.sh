@@ -53,7 +53,7 @@ write_secret() {
     return 0
   fi
   printf '%s' "$content" > "$file"
-  chmod 644 "$file" 2>/dev/null || true
+  chmod 600 "$file" 2>/dev/null || true
 }
 
 # 生成空的可选 secret 文件（已存在则跳过）
@@ -61,7 +61,7 @@ touch_optional() {
   file=$1
   if [ ! -f "$file" ]; then
     : > "$file"
-    chmod 644 "$file" 2>/dev/null || true
+    chmod 600 "$file" 2>/dev/null || true
   fi
 }
 
@@ -89,7 +89,7 @@ touch_optional "$SECRETS_DIR/ai-provider-api-key"
 # 此处只创建空文件作为标记，start.sh 检测到为空时会在 api 镜像就绪后自动生成。
 if [ ! -s "$SECRETS_DIR/admin-password-hash" ]; then
   : > "$SECRETS_DIR/admin-password-hash"
-  chmod 644 "$SECRETS_DIR/admin-password-hash" 2>/dev/null || true
+  chmod 600 "$SECRETS_DIR/admin-password-hash" 2>/dev/null || true
   info "admin-password-hash 将由 api 镜像在启动前自动生成（默认密码：$DEFAULT_ADMIN_PASSWORD）"
 else
   ok "admin-password-hash 已存在（跳过生成）"

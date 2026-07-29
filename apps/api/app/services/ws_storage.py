@@ -1887,6 +1887,22 @@ async def _resolve_peer_id(
     return ""
 
 
+def _normalize_id_for_hash(value: object) -> str:
+    """标准化用户 ID 用于哈希计算：去除 sid: 前缀和 @goofish 后缀。
+
+    确保 API 发送的消息（senderUserId 带 @goofish 后缀）和 WebSocket 回环消息
+    （senderUserId 为原始 ID）生成相同的 content_hash，使去重能正确命中。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("sid:"):
+        text = text[4:]
+    if text.endswith("@goofish"):
+        text = text[:-8]
+    return text.strip()
+
+
 def _generate_message_uid(msg: dict, seller_external_uid: str = "") -> str:
     """生成稳定的消息唯一ID（message_uid）。
 
@@ -1909,8 +1925,12 @@ def _generate_message_uid(msg: dict, seller_external_uid: str = "") -> str:
     if pnm_id:
         return pnm_id
     s_id = str(msg.get("sId") or "")
-    sender = str(msg.get("senderUserId") or "")
-    receiver = str(msg.get("receiverUserId") or "")
+    # 标准化 sender/receiver：去除 sid: 前缀和 @goofish 后缀。
+    # 原因：API 发送消息时 senderUserId 带 @goofish 后缀（misc.py 的 _to_goofish_id），
+    # 而 WebSocket 回环消息的 senderUserId 是原始 ID（无后缀）。
+    # 不标准化会导致同一条消息生成不同的 content_hash，去重失败，前端显示两条。
+    sender = _normalize_id_for_hash(msg.get("senderUserId"))
+    receiver = _normalize_id_for_hash(msg.get("receiverUserId"))
     content = str(msg.get("msgContent") or "")
     content_type = int(msg.get("contentType") or 1)
     reminder = str(msg.get("reminderContent") or "")
@@ -2052,6 +2072,8 @@ async def save_chat_message(
         # 第 4 条件匹配遗留记录（pnm_id/message_uid 均为 NULL 的旧 _insert_xianyu_chat_message 产物）。
         # 旧实现仅检查 pnm_id = ''，无法匹配 NULL；且未按内容匹配，过于宽泛。
         # 修复：同时匹配空字符串和 NULL，并增加 s_id+sender+receiver+content 精确匹配。
+        # sender/receiver 参数标准化（去除 @goofish 后缀），SQL 侧也用 REPLACE 兼容
+        # 旧记录中带 @goofish 后缀的 sender_user_id/receiver_user_id。
         existing = await db.execute(
             text("""
                 SELECT id, message_time, pnm_id, message_uid FROM xianyu_chat_message
@@ -2060,8 +2082,10 @@ async def save_chat_message(
                     OR (pnm_id = :muid AND pnm_id != '' AND pnm_id IS NOT NULL)
                     OR (:content_hash != '' AND message_uid = :content_hash)
                     OR (:content_hash != '' AND (pnm_id = '' OR pnm_id IS NULL) AND message_uid IS NULL
-                        AND s_id = :s_id AND sender_user_id = :sender_user_id
-                        AND receiver_user_id = :receiver_user_id AND msg_content = :msg_content)
+                        AND s_id = :s_id
+                        AND REPLACE(REPLACE(sender_user_id, '@goofish', ''), 'sid:', '') = :sender_user_id
+                        AND REPLACE(REPLACE(receiver_user_id, '@goofish', ''), 'sid:', '') = :receiver_user_id
+                        AND msg_content = :msg_content)
                 )
                 LIMIT 1
             """),
@@ -2070,8 +2094,8 @@ async def save_chat_message(
                 "content_hash": content_hash,
                 "account_id": account_id,
                 "s_id": msg.get("sId", ""),
-                "sender_user_id": msg.get("senderUserId", ""),
-                "receiver_user_id": msg.get("receiverUserId", ""),
+                "sender_user_id": _normalize_id_for_hash(msg.get("senderUserId", "")),
+                "receiver_user_id": _normalize_id_for_hash(msg.get("receiverUserId", "")),
                 "msg_content": msg.get("msgContent", ""),
             }
         )
@@ -3973,7 +3997,7 @@ async def get_context_messages(
         rows = await db.execute(
             text(f"""
                 SELECT
-                    base.id, base.pnm_id, base.s_id AS sid, base.content_type AS contentType,
+                    base.id, base.pnm_id AS pnmId, base.s_id AS sid, base.content_type AS contentType,
                     base.msg_content AS msgContent, base.complete_msg AS completeMsg, base.sender_user_id AS senderUserId,
                     base.sender_user_name AS senderUserName, base.xy_goods_id AS xyGoodsId,
                     base.message_time AS messageTime, base.direction, base.reminder_content AS reminderContent,
@@ -4085,7 +4109,7 @@ async def get_context_messages(
                 rows = await db.execute(
                     text(f"""
                         SELECT
-                            base.id, base.pnm_id, base.s_id AS sid, base.content_type AS contentType,
+                            base.id, base.pnm_id AS pnmId, base.s_id AS sid, base.content_type AS contentType,
                             base.msg_content AS msgContent, base.complete_msg AS completeMsg, base.sender_user_id AS senderUserId,
                             base.sender_user_name AS senderUserName, base.xy_goods_id AS xyGoodsId,
                             base.message_time AS messageTime, base.direction, base.reminder_content AS reminderContent,
@@ -4156,7 +4180,7 @@ async def get_context_messages(
                 rows = await db.execute(
                     text(f"""
                         SELECT
-                            base.id, base.pnm_id, base.s_id AS sid, base.content_type AS contentType,
+                            base.id, base.pnm_id AS pnmId, base.s_id AS sid, base.content_type AS contentType,
                             base.msg_content AS msgContent, base.complete_msg AS completeMsg, base.sender_user_id AS senderUserId,
                             base.sender_user_name AS senderUserName, base.xy_goods_id AS xyGoodsId,
                             base.message_time AS messageTime, base.direction, base.reminder_content AS reminderContent,
@@ -4199,7 +4223,7 @@ async def get_context_messages(
         rows = await db.execute(
             text(f"""
                 SELECT
-                    base.id, base.pnm_id, base.s_id AS sid, base.content_type AS contentType,
+                    base.id, base.pnm_id AS pnmId, base.s_id AS sid, base.content_type AS contentType,
                     base.msg_content AS msgContent, base.complete_msg AS completeMsg, base.sender_user_id AS senderUserId,
                     base.sender_user_name AS senderUserName, base.xy_goods_id AS xyGoodsId,
                     base.message_time AS messageTime, base.direction, base.reminder_content AS reminderContent,

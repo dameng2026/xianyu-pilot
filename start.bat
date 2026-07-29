@@ -137,8 +137,9 @@ if not errorlevel 1 (
   echo [!] 端口 !WEB_PORT! 已被占用，自动查找可用端口...
   set /a TRY_PORT=!WEB_PORT!+1
   set PORT_FOUND=0
+  set /a MAX_PORT=!WEB_PORT!+9
   :find_port_loop
-  if !TRY_PORT! GTR !WEB_PORT!+9 goto port_not_found
+  if !TRY_PORT! GTR !MAX_PORT! goto port_not_found
   netstat -ano | findstr ":!TRY_PORT! " | findstr "LISTENING" >nul 2>&1
   if errorlevel 1 (
     set PORT_FOUND=1

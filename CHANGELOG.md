@@ -22,6 +22,37 @@
 ### 修复
 - _暂无_
 
+## [v1.6.0] - 2026-07-29
+
+### 新增
+- **退款管理模块**：新增「退款管理」路由与服务（`refunds.py` / `refund_service.py`），支持退款分页列表查询（账号、状态、关键词筛选）、退款统计（按 `order_status` 分组）、退款详情查看、按账号或全量同步退款订单、账号同步状态列表；新增迁移 039 `xianyu_refund` / `xianyu_refund_account_state` 两表（退款 ID 维度，一个订单可对应多次退款，包含商品信息、退款金额、退款状态、客服介入状态、物流信息等字段）
+- **小刀订单免拼发货**：`xianyu_api_service.py` 新增 `confirm_freeshipping` 调用 `mtop.idle.groupon.activity.seller.freeshipping` 免拼发货接口（小刀订单专用），并新增 `confirm_order_shipment` 统一调度函数（小刀订单走免拼、普通订单走虚拟发货）；`order.py` 新增免拼发货接口与 `ConfirmFreeshippingReqDTO`；已发货（`ORDER_ALREADY_DELIVERY`）视为幂等成功
+- **订单同步对接真实流程**：`/syncSoldOrders` 由原占位实现改为调用 `sync_orders_for_account` 真实拉取 `mtop.taobao.idle.trade.merchant.sold.get` 并 upsert 本地，返回真实的 `synced_count` / `inserted` / `updated` / `failed` 计数
+- **关于我们新增 QQ 群与微信客服板块**：「关于我们」页新增「QQ 群」「微信客服」两个社区卡片，配置后可展示二维码；前端 `about-content-model.js` 增加对应数据模型，`AboutSettings.vue` 新增 violet 色调样式；README 同步新增 QQ 群与微信客服二维码入口
+- **通知渠道密钥清除按钮**：通知设置页所有敏感字段（SMTP 授权码、飞书 App Secret、Verification Token、Encrypt Key、Webhook URL、签名密钥）在「已配置」状态下显示清除按钮，点击后标记清除并提示「保存后生效」，解决之前无法清空已保存密钥的问题
+- **人工 OUT 消息暂停自动回复**：`ws_startup.py` 新增人工 OUT 消息检测，卖家手动发送消息（`direction=OUT` 且 `is_auto_reply=0`）时自动将该会话 `auto_reply_paused=1` 并记录 `last_manual_reply_at`，避免 AI 自动回复与人工回复冲突；AI 回复消息不触发暂停
+
+### 变更
+- **密码强度策略放宽**：`security.py` 密码最低长度从 12 位降为 6 位，移除「大写字母、小写字母、数字、特殊字符至少三类」约束；个人中心页同步将提示文字从「至少 8 位」调整为「至少 6 位」，降低开源用户部署门槛
+- **审计与桥接能力默认开启**：`docker-compose.yml` 中 `AUDIT_MUTATION_INTENT_REQUIRED` 与三个商业版桥接能力 flag（`COMMERCIAL_BACKEND_MUTATION_IDEMPOTENCY_ENABLED` / `PAYMENT_IDEMPOTENCY_ENABLED` / `PAID_AD_PLACEMENT_ENFORCED`）默认值从 `false` 改为 `true`，与开源版桥接规则要求的三开关默认全开一致
+- **Secret 文件权限收紧**：`setup-wizard.sh` 生成的所有 secret 文件权限从 `644` 改为 `600`，避免其他用户读取密钥
+- **顶栏精简**：`Topbar.vue` 移除通知中心、关于我们、全屏切换三个按钮及其面板与事件监听，仅保留头像与退出登录菜单
+- **请求 ID 优先级调整**：`request.js` 优先使用请求 config 中的 `X-Request-Id`，其次响应头与响应体，便于在请求发起侧统一追踪
+- **开源版版本号升至 1.6.0**：本次新增退款管理、免拼发货、QQ群/微信客服板块、人工OUT暂停自动回复等多项用户可见功能，按语义化版本次版本号 +1，从 1.5.0 升至 1.6.0
+
+### 优化
+- **自动发货数据库层去重保护**：`ws_delivery_handler.py` 新增 `_has_existing_realtime_delivery`（查询 `delivery_record` 表，成功记录 10 分钟窗口 / 失败记录 1 小时窗口）与 `_check_order_already_shipped`（检查 `xianyu_trade_order.order_status=3`）两道去重防线，防止 WS 周期性推送同一付款事件导致重复发货；新增付款兜底节流（同 `account_id + pnm_id` 60 秒内只触发一次），覆盖 WS 事件丢失、可重试错误失败、启动遗漏等场景
+- **消息去重 ID 标准化**：`ws_storage.py` 新增 `_normalize_id_for_hash`，标准化 `sender_user_id` / `receiver_user_id`（去除 `sid:` 前缀与 `@goofish` 后缀）后参与 `content_hash` 计算；SQL 兜底匹配用 `REPLACE` 兼容旧记录中带后缀的字段；`ws_protocol.py` 同步标准化逻辑；解决 API 发送（带后缀）与 WS 回环（无后缀）生成不同 hash 导致去重失败、前端重复显示的问题
+- **SSE 独立连接配额**：`nginx-main.conf` 新增 `sse_connections_per_ip` zone，`nginx.conf` 让 `/api/sse/` 长连接使用独立 conn zone，避免页面加载时并发的短连接请求占满 SSE 配额导致 429
+- **API 就绪探针兼容 Python 3.10**：`main.py` 将 `asyncio.timeout` 改为 `asyncio.wait_for` 包装，兼容 Python 3.10（`asyncio.timeout` 为 3.11+ API）
+- **TimeoutError 异常类型修正**：`worker.py` / `scheduled_task_runtime.py` / `message_automation_outbox.py` 将 `except TimeoutError` 改为 `except asyncio.TimeoutError`，修复 Python 3.10 下裸 `TimeoutError` 捕获不到 `asyncio.wait_for` 超时的问题
+- **start.bat 端口查找范围判断修正**：原 `if !TRY_PORT! GTR !WEB_PORT!+9` 在 `set /a` 表达式外无法解析，改为先 `set /a MAX_PORT=!WEB_PORT!+9` 再比较，修复端口冲突时自动查找可用端口逻辑失效
+- **start.sh 数据库迁移等待时长**：迁移等待循环从 60 秒增加到 90 秒，避免慢机首次迁移超时被误判失败
+
+### 修复
+- **在线消息重复显示（API/WS 回环 hash 不一致）**：API 发送消息时 `senderUserId` 带 `@goofish` 后缀，WS 回环消息为原始 ID，导致同一条消息生成不同 `content_hash`，去重失败，前端显示两条；现标准化后再哈希，DB / SSE 广播 / WS 回环使用同一 `messageIdentity`；`MessagesPage.vue` 同步增加 `pnm_id` / `message_uid` 字段读取兜底
+- **同步订单接口返回空数据**：`/syncSoldOrders` 之前硬编码返回 `synced_count: 0`，未调用真实同步流程；现对接 `sync_orders_for_account` 后返回真实插入/更新计数
+
 ## [v1.5.0] - 2026-07-25
 
 ### 新增

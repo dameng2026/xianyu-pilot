@@ -197,6 +197,22 @@ async def _try_keyword_auto_reply(
                 break
 
     if not matched_rule:
+        # 同步商业版：写入未命中日志
+        try:
+            from ..models.entities import AutoReplyLog
+            log_entry = AutoReplyLog(
+                account_id=account_id,
+                rule_id=None,
+                trigger_message=content[:1000] if content else None,
+                hit_type="none",
+                status=0,
+                action="manual",
+                safety_reasons="未命中自动回复规则",
+            )
+            db.add(log_entry)
+            await db.flush()
+        except Exception as log_exc:
+            logger.warning("写入未命中日志失败：%s", log_exc, exc_info=True)
         return False
 
     reply_text = str(matched_rule.reply_content or "").strip()
@@ -232,6 +248,22 @@ async def _try_keyword_auto_reply(
         matched_rule.id,
         matched_rule.rule_name or "",
     )
+    # 同步商业版：写入自动回复日志
+    try:
+        from ..models.entities import AutoReplyLog
+        log_entry = AutoReplyLog(
+            account_id=account_id,
+            rule_id=matched_rule.id,
+            trigger_message=content[:1000] if content else None,
+            reply_content=reply_text[:1000] if reply_text else None,
+            hit_type="keyword",
+            status=1,
+            action="auto_send_allowed",
+        )
+        db.add(log_entry)
+        await db.flush()
+    except Exception as log_exc:
+        logger.warning("写入自动回复日志失败：%s", log_exc, exc_info=True)
     return True
 
 

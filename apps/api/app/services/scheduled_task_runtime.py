@@ -300,7 +300,7 @@ class ScheduledTaskRuntime:
                 )
                 outcome = _sanitized_outcome(outcome)
                 disable = outcome.status == "unsupported"
-        except TimeoutError:
+        except asyncio.TimeoutError:
             outcome = TaskExecutionOutcome(
                 status="timeout",
                 error=f"任务执行超过 {self.timeout_seconds} 秒，已中止等待",

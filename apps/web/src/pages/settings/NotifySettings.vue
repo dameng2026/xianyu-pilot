@@ -242,12 +242,23 @@
                 </label>
                 <label class="notify-field">
                   <span>授权码</span>
-                  <input
-                    v-model="selectedChannel.smtpPass"
-                    type="password"
-                    autocomplete="new-password"
-                    :placeholder="selectedChannel.smtpPassConfigured ? '已配置，留空保留' : '请输入 SMTP 授权码'"
-                  />
+                  <div class="notify-input-wrap">
+                    <input
+                      v-model="selectedChannel.smtpPass"
+                      type="password"
+                      autocomplete="new-password"
+                      :placeholder="selectedChannel.smtpPassConfigured ? '已配置，留空保留' : '请输入 SMTP 授权码'"
+                    />
+                    <button
+                      v-if="selectedChannel.smtpPassConfigured"
+                      type="button"
+                      class="notify-input-action notify-clear-action"
+                      title="清除已保存的 SMTP 授权码"
+                      @click="clearSecretField(selectedChannel, 'smtpPass', 'smtpPassConfigured')"
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </div>
                 </label>
                 <label class="notify-field">
                   <span>发件人</span>
@@ -269,30 +280,63 @@
                 </label>
                 <label class="notify-field">
                   <span>App Secret</span>
-                  <input
-                    v-model="selectedChannel.secret"
-                    type="password"
-                    autocomplete="new-password"
-                    :placeholder="selectedChannel.secretConfigured ? '已配置，留空保留' : '飞书自建应用 App Secret'"
-                  />
+                  <div class="notify-input-wrap">
+                    <input
+                      v-model="selectedChannel.secret"
+                      type="password"
+                      autocomplete="new-password"
+                      :placeholder="selectedChannel.secretConfigured ? '已配置，留空保留' : '飞书自建应用 App Secret'"
+                    />
+                    <button
+                      v-if="selectedChannel.secretConfigured"
+                      type="button"
+                      class="notify-input-action notify-clear-action"
+                      title="清除已保存的 App Secret"
+                      @click="clearSecretField(selectedChannel, 'secret', 'secretConfigured')"
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </div>
                 </label>
                 <label class="notify-field">
                   <span>Verification Token</span>
-                  <input
-                    v-model="selectedChannel.verificationToken"
-                    type="password"
-                    autocomplete="new-password"
-                    :placeholder="selectedChannel.verificationTokenConfigured ? '已配置，留空保留' : '事件订阅的 Verification Token'"
-                  />
+                  <div class="notify-input-wrap">
+                    <input
+                      v-model="selectedChannel.verificationToken"
+                      type="password"
+                      autocomplete="new-password"
+                      :placeholder="selectedChannel.verificationTokenConfigured ? '已配置，留空保留' : '事件订阅的 Verification Token'"
+                    />
+                    <button
+                      v-if="selectedChannel.verificationTokenConfigured"
+                      type="button"
+                      class="notify-input-action notify-clear-action"
+                      title="清除已保存的 Verification Token"
+                      @click="clearSecretField(selectedChannel, 'verificationToken', 'verificationTokenConfigured')"
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </div>
                 </label>
                 <label class="notify-field">
                   <span>Encrypt Key（可选）</span>
-                  <input
-                    v-model="selectedChannel.encryptKey"
-                    type="password"
-                    autocomplete="new-password"
-                    :placeholder="selectedChannel.encryptKeyConfigured ? '已配置，留空保留' : '启用加密时填写'"
-                  />
+                  <div class="notify-input-wrap">
+                    <input
+                      v-model="selectedChannel.encryptKey"
+                      type="password"
+                      autocomplete="new-password"
+                      :placeholder="selectedChannel.encryptKeyConfigured ? '已配置，留空保留' : '启用加密时填写'"
+                    />
+                    <button
+                      v-if="selectedChannel.encryptKeyConfigured"
+                      type="button"
+                      class="notify-input-action notify-clear-action"
+                      title="清除已保存的 Encrypt Key"
+                      @click="clearSecretField(selectedChannel, 'encryptKey', 'encryptKeyConfigured')"
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </div>
                 </label>
                 <label class="notify-field">
                   <span>接收者 ID（receiveId）</span>
@@ -361,9 +405,19 @@
                       v-if="selectedChannel.webhookUrl"
                       type="button"
                       class="notify-input-action"
+                      title="复制当前 Webhook 地址"
                       @click="copyWebhookUrl"
                     >
                       <Icon name="copy" />
+                    </button>
+                    <button
+                      v-if="selectedChannel.webhookUrlConfigured"
+                      type="button"
+                      class="notify-input-action notify-clear-action"
+                      title="清除已保存的 Webhook 地址"
+                      @click="clearSecretField(selectedChannel, 'webhookUrl', 'webhookUrlConfigured')"
+                    >
+                      <Icon name="close" />
                     </button>
                   </div>
                 </label>
@@ -390,12 +444,23 @@
               <div v-if="selectedChannel.type !== 'webhook'" class="notify-form-grid two">
                 <label v-if="selectedChannel.type !== 'webhook'" class="notify-field">
                   <span>签名密钥</span>
-                  <input
-                    v-model="selectedChannel.secret"
-                    type="password"
-                    autocomplete="new-password"
-                    :placeholder="selectedChannel.secretConfigured ? '已配置，留空保留' : '可选，用于签名验证'"
-                  />
+                  <div class="notify-input-wrap">
+                    <input
+                      v-model="selectedChannel.secret"
+                      type="password"
+                      autocomplete="new-password"
+                      :placeholder="selectedChannel.secretConfigured ? '已配置，留空保留' : '可选，用于签名验证'"
+                    />
+                    <button
+                      v-if="selectedChannel.secretConfigured"
+                      type="button"
+                      class="notify-input-action notify-clear-action"
+                      title="清除已保存的签名密钥"
+                      @click="clearSecretField(selectedChannel, 'secret', 'secretConfigured')"
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </div>
                 </label>
               </div>
             </section>
@@ -1350,6 +1415,12 @@ function createChannelSeed(meta, overrides = {}) {
     encryptKeyConfigured: false,
     receiveId: '',
     receiveIdType: 'open_id',
+    // 清除标记：用户点击清除按钮后置为 true，提交后由后端清空对应密钥
+    clearWebhookUrl: false,
+    clearSecret: false,
+    clearSmtpPass: false,
+    clearVerificationToken: false,
+    clearEncryptKey: false,
     icon: meta.icon,
     accent: meta.accent,
     ...overrides
@@ -1424,6 +1495,12 @@ function normalizeChannelRecord(item, meta) {
     appId: String(item.appId || item.app_id || ''),
     receiveId: String(item.receiveId || item.receive_id || ''),
     receiveIdType: String(item.receiveIdType || item.receive_id_type || 'open_id'),
+    // 清除标记：加载时重置为 false
+    clearWebhookUrl: false,
+    clearSecret: false,
+    clearSmtpPass: false,
+    clearVerificationToken: false,
+    clearEncryptKey: false,
     icon: fallbackMeta.icon,
     accent: fallbackMeta.accent
   }
@@ -1738,7 +1815,12 @@ function serializeChannels() {
     verificationToken: channel.verificationToken || '',
     encryptKey: channel.encryptKey || '',
     receiveId: channel.receiveId || '',
-    receiveIdType: channel.receiveIdType || 'open_id'
+    receiveIdType: channel.receiveIdType || 'open_id',
+    clearWebhookUrl: !!channel.clearWebhookUrl,
+    clearSecret: !!channel.clearSecret,
+    clearSmtpPass: !!channel.clearSmtpPass,
+    clearVerificationToken: !!channel.clearVerificationToken,
+    clearEncryptKey: !!channel.clearEncryptKey
   }))
 }
 
@@ -2008,6 +2090,16 @@ async function copyWebhookUrl() {
   } catch {
     error.value = '复制失败，请手动复制当前地址'
   }
+}
+
+function clearSecretField(channel, field, configuredField) {
+  if (!channel) return
+  const clearFlag = `clear${field[0].toUpperCase()}${field.slice(1)}`
+  channel[field] = ''
+  channel[configuredField] = false
+  channel[clearFlag] = true
+  clearNotices()
+  success.value = '已标记清除，保存后生效'
 }
 
 function addChannel() {

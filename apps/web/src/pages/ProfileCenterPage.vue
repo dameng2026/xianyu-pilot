@@ -310,7 +310,7 @@
                 <span class="badge">已设置</span>
               </div>
               <b>登录密码</b>
-              <span>建议定期更换，使用 8 位以上字母、数字组合，不要与其他平台共用。</span>
+              <span>建议定期更换，使用 6 位以上字母、数字组合，不要与其他平台共用。</span>
               <div class="security-card-note">
                 <span class="security-card-note-dot"></span>
                 <span>{{ securityPasswordHint }}</span>
@@ -333,7 +333,7 @@
           <div class="panel-head">
             <div>
               <h3>修改密码</h3>
-              <p>新密码至少 8 位。修改成功后建议重新登录。</p>
+              <p>新密码至少 6 位。修改成功后建议重新登录。</p>
             </div>
             <button type="button" class="app-btn" @click="activeTab = 'security'">返回</button>
           </div>
@@ -344,7 +344,7 @@
             </label>
             <label>
               <span>新密码</span>
-              <input v-model="passwordForm.newPassword" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+              <input v-model="passwordForm.newPassword" type="password" autocomplete="new-password" placeholder="至少 6 位" />
             </label>
             <label>
               <span>确认新密码</span>
@@ -481,7 +481,7 @@ async function loadOverview() {
 
 async function submitPassword() {
   if (!passwordForm.oldPassword || !passwordForm.newPassword) return showNotice('请完整填写密码信息', 'warn')
-  if (passwordForm.newPassword.length < 8) return showNotice('新密码至少 8 位', 'warn')
+  if (passwordForm.newPassword.length < 6) return showNotice('新密码至少 6 位', 'warn')
   if (passwordForm.newPassword !== passwordForm.confirmPassword) return showNotice('两次输入的新密码不一致', 'warn')
   saving.value = true
   try {

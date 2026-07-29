@@ -40,18 +40,10 @@ def validate_password_strength(password: str, username: str = "") -> str | None:
     """Return a user-facing validation error, or None for an acceptable password."""
     value = password or ""
     byte_length = len(value.encode("utf-8"))
-    if len(value) < 12:
-        return "新密码至少需要 12 个字符"
+    if len(value) < 6:
+        return "新密码至少需要 6 个字符"
     if byte_length > 72:
         return "新密码 UTF-8 长度不能超过 72 字节"
-    classes = sum((
-        bool(re.search(r"[a-z]", value)),
-        bool(re.search(r"[A-Z]", value)),
-        bool(re.search(r"\d", value)),
-        bool(re.search(r"[^A-Za-z0-9]", value)),
-    ))
-    if classes < 3:
-        return "新密码需包含大写字母、小写字母、数字、特殊字符中的至少三类"
     normalized = value.casefold()
     if normalized in {
         "123456789012", "password123!", "admin123456!", "qwerty123456!",

@@ -33,6 +33,7 @@ from .routes import (
     navigation,
     order,
     profile,
+    refunds,
     quick_reply,
     rag,
     restful,
@@ -76,14 +77,10 @@ include_router_excluding(
         ("DELETE", "/goods/{goods_id}/remote"),
     },
 )
-include_router_excluding(
-    api_router,
-    order.router,
-    excluded={
-        ("POST", "/order/confirmShipment"),
-        ("POST", "/order/syncSoldOrders"),
-    },
-)
+# 订单管理（启用商业版同步过来的能力：确认发货、同步订单）
+api_router.include_router(order.router)
+# 退款管理（新增模块，参考商业版实现）
+api_router.include_router(refunds.router)
 
 # 消息与会话
 api_router.include_router(messages.router)
@@ -135,6 +132,7 @@ api_router.include_router(dashboard.router)
 # 自动回复
 api_router.include_router(auto_reply_scope.router)
 api_router.include_router(quick_reply.router)
+# business_settings_compat 与 frontend_compat 的 auto-reply/rules/* 路由重复，保持排除
 include_router_excluding(
     api_router,
     business_settings_compat.router,
@@ -158,6 +156,8 @@ api_router.include_router(sse.router)
 
 # 模块元数据与配置（Phase 5-6）
 api_router.include_router(module.router)
+# frontend_compat 与 order.router 的 /order/list 重复，与 business_settings_compat 的
+# /auto-reply/rules/* 重复，保持原排除（避免路由冲突）
 include_router_excluding(
     api_router,
     frontend_compat.router,
@@ -194,21 +194,15 @@ include_router_excluding(
     },
 )
 api_router.include_router(admin_data_compat.router)
-include_router_excluding(
-    api_router,
-    delivery_workflow_compat.router,
-    excluded={
-        ("POST", "/cards/import/validate"),
-    },
-)
-include_router_excluding(
-    api_router,
-    delivery_workflow_compat.delivery_rules_router,
-    excluded={
-        ("GET", "/auto-delivery/rules"),
-        ("GET", "/auto-delivery/global-config"),
-        ("PUT", "/auto-delivery/global-config"),
-    },
+# 启用卡密导入校验（商业版同步）
+api_router.include_router(delivery_workflow_compat.router)
+# 自动发货规则路由与 frontend_compat 重复，保持排除；global-config 路由仅在此处提供，启用
+include_router_excluding(
+    api_router,
+    delivery_workflow_compat.delivery_rules_router,
+    excluded={
+        ("GET", "/auto-delivery/rules"),
+    },
 )
 
 # RAG 知识库

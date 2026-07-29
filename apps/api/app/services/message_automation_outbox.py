@@ -441,7 +441,7 @@ async def _worker_loop(stop: asyncio.Event, wakeup: asyncio.Event) -> None:
             wakeup.clear()
             try:
                 await asyncio.wait_for(wakeup.wait(), timeout=_POLL_SECONDS)
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 continue
     finally:
         _worker_health_status = "unavailable"
@@ -475,7 +475,7 @@ async def stop_message_automation_outbox_worker() -> None:
         _worker_wakeup.set()
     try:
         await asyncio.wait_for(asyncio.shield(task), timeout=10)
-    except TimeoutError:
+    except asyncio.TimeoutError:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     finally:

@@ -980,11 +980,13 @@ def validate_parsed_message(msg: dict) -> dict:
     # 校验5: pnm_id 为空时，用稳定 hash 作为备用消息 UID。
     # 注意：不包含 messageTime，否则同一消息在不同时间戳下会生成不同 hash，
     # 导致本地持久化与 WS 回环的去重失败（messageTime 在本地为 0，在回环中为服务端时间）。
+    # 同时标准化 sender/receiver：去除 @goofish 后缀，确保 API 发送（带后缀）和
+    # WS 回环（无后缀）生成相同的 hash，使 ws_storage._generate_message_uid 去重命中。
     if not pnm_id and msg_content:
         fallback_raw = "|".join([
             s_id,
-            sender_user_id,
-            receiver_user_id,
+            sender_user_id_normalized,
+            receiver_user_id.replace("@goofish", "").strip() if receiver_user_id else "",
             str(content_type),
             msg_content,
             str(msg.get("reminderContent") or ""),

@@ -4,6 +4,7 @@
 支持的渠道：
 - webhook     通用 Webhook（自定义 JSON）
 - feishu      飞书自定义机器人（msg_type:text，可选签名校验）
+- feishu_app  飞书自建应用（通过 Open API 发送文本消息，支持双向对话）
 - dingtalk    钉钉自定义机器人（msgtype:text，可选加签）
 - wechat_work 企业微信群机器人（msgtype:text）
 - pushplus    PushPlus（向 pushplus.plus/send 发 token+title+content）
@@ -35,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.database import async_session
 from ..core.secret_store import decrypt_secret
 from ..core.upload_security import request_public_https
+from .feishu_bot import send_text_message_result as _feishu_app_send
 from .notification_event_attempt import (
     NotificationDispatchOutcome,
     NotificationEventCommand,
@@ -281,6 +283,11 @@ def _is_channel_ready(channel: dict) -> bool:
     ctype = str(channel.get("type") or "")
     if ctype in ("webhook", "feishu", "dingtalk", "wechat_work"):
         return bool(str(channel.get("webhookUrl") or "").strip())
+    if ctype == "feishu_app":
+        return all(
+            bool(str(channel.get(k) or "").strip())
+            for k in ("appId", "secret", "verificationToken", "receiveId")
+        )
     if ctype == "pushplus":
         return bool(str(channel.get("receiver") or "").strip())
     if ctype == "email":
@@ -508,6 +515,33 @@ async def _send_feishu(channel: dict, rendered: str, timeout_seconds: int) -> di
         url = f"{url}{'&' if '?' in url else '?'}timestamp={ts}&sign={sign}"
     return await _http_post(url, body, timeout_seconds, parse_key="code", parse_success=0,
                             ok_msg="飞书发送成功", fail_prefix="飞书发送失败")
+
+
+async def _send_feishu_app(channel: dict, rendered: str) -> dict:
+    """通过飞书自建应用 Open API 发送文本消息。"""
+    receive_id = str(channel.get("receiveId") or "").strip()
+    receive_id_type = str(channel.get("receiveIdType") or "open_id").strip() or "open_id"
+    try:
+        result = await _feishu_app_send(receive_id, rendered, receive_id_type)
+    except Exception as exc:
+        return {
+            "success": False,
+            "status_code": 0,
+            "cost_ms": 0,
+            "message": f"飞书自建应用发送异常：{exc}",
+            "request_body": "",
+            "response_body": "",
+            "outcome_known": False,
+        }
+    return {
+        "success": bool(result.get("success")),
+        "status_code": int(result.get("status_code") or 0),
+        "cost_ms": int(result.get("cost_ms") or 0),
+        "message": str(result.get("message") or ("飞书自建应用发送成功" if result.get("success") else "飞书自建应用发送失败")),
+        "request_body": "",
+        "response_body": str(result.get("response_body") or ""),
+        "outcome_known": bool(result.get("outcome_known", True)),
+    }
 
 
 async def _send_dingtalk(channel: dict, rendered: str, timeout_seconds: int) -> dict:
@@ -748,6 +782,8 @@ async def dispatch_notification_detailed(
                 try:
                     if ctype == "feishu":
                         result = await _send_feishu(channel, rendered, timeout_seconds)
+                    elif ctype == "feishu_app":
+                        result = await _send_feishu_app(channel, rendered)
                     elif ctype == "dingtalk":
                         result = await _send_dingtalk(channel, rendered, timeout_seconds)
                     elif ctype == "wechat_work":

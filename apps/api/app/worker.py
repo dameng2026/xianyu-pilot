@@ -129,7 +129,7 @@ async def run_delivery_recovery_forever(
             logger.error("delivery_recovery loop failed", exc_info=True)
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             continue
 
 
@@ -150,7 +150,7 @@ async def _heartbeat_loop(
             logger.error("Unable to update scheduler heartbeat", exc_info=True)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             continue
 
 
@@ -212,7 +212,7 @@ async def run_forever(
 
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 continue
     finally:
         stop.set()

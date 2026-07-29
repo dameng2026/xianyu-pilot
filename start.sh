@@ -487,7 +487,7 @@ printf '  [2/5] 数据库迁移...'
 stage_start=$(now_ms)
 migrate_ok=0
 i=0
-while [ "$i" -lt 60 ]; do
+while [ "$i" -lt 90 ]; do
   s=$($DOCKER_COMPOSE ps --format '{{.Status}}' migrate 2>/dev/null | head -1) || s=""
   if echo "$s" | grep -qiE 'exited.*code.*0|exited.*0'; then
     migrate_ok=1

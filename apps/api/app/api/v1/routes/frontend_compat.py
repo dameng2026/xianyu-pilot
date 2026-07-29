@@ -3250,13 +3250,49 @@ async def compat_auto_reply_rules_preview(
 async def compat_auto_reply_rules_logs(
     current: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=200),
+    accountId: int | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Compat: GET /auto-reply/rules/logs"""
+    """Compat: GET /auto-reply/rules/logs（同步商业版：返回真实日志数据）。"""
+    from ....models.entities import AutoReplyLog
+    from sqlalchemy import select, func as sa_func
+    # 统计总数
+    count_query = select(sa_func.count()).select_from(AutoReplyLog).where(
+        AutoReplyLog.deleted == 0
+    )
+    if accountId is not None:
+        count_query = count_query.where(AutoReplyLog.account_id == accountId)
+    total = (await db.execute(count_query)).scalar() or 0
+    # 分页查询
+    offset = (current - 1) * size
+    list_query = select(AutoReplyLog).where(
+        AutoReplyLog.deleted == 0
+    )
+    if accountId is not None:
+        list_query = list_query.where(AutoReplyLog.account_id == accountId)
+    list_query = list_query.order_by(AutoReplyLog.created_time.desc()).offset(offset).limit(size)
+    result = await db.execute(list_query)
+    logs = result.scalars().all()
+    records = []
+    for log in logs:
+        records.append({
+            "id": log.id,
+            "accountId": log.account_id,
+            "conversationId": log.conversation_id,
+            "ruleId": log.rule_id,
+            "triggerMessage": log.trigger_message,
+            "replyContent": log.reply_content,
+            "hitType": log.hit_type,
+            "status": log.status,
+            "failReason": log.fail_reason,
+            "action": log.action,
+            "safetyReasons": log.safety_reasons,
+            "createdTime": _dt_text(log.created_time),
+        })
     return ResultObject.success({
-        "records": [],
-        "total": 0,
+        "records": records,
+        "total": total,
         "current": current,
         "size": size,
     })
@@ -3264,17 +3300,59 @@ async def compat_auto_reply_rules_logs(
 
 @router.get("/auto-reply/rules/stats")
 async def compat_auto_reply_rules_stats(
+    days: int = Query(7, ge=1, le=90),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Compat: GET /auto-reply/rules/stats"""
-    from ....models.entities import AutoReplyRule
-    from sqlalchemy import func, select
-    result = await db.execute(select(func.count()).select_from(AutoReplyRule))
-    total = int(result.scalar() or 0)
+    """Compat: GET /auto-reply/rules/stats（同步商业版：返回真实统计数据）。"""
+    from ....models.entities import AutoReplyLog, AutoReplyRule
+    from sqlalchemy import func as sa_func, select, text
+    from datetime import datetime, timedelta
+    safe_days = max(1, min(days, 90))
+    start_date = datetime.now() - timedelta(days=safe_days)
+    # 规则统计
+    total_rules = (await db.execute(
+        select(sa_func.count()).select_from(AutoReplyRule).where(AutoReplyRule.deleted == 0)
+    )).scalar() or 0
+    enabled_rules = (await db.execute(
+        select(sa_func.count()).select_from(AutoReplyRule).where(
+            AutoReplyRule.deleted == 0,
+            AutoReplyRule.status == 1,
+        )
+    )).scalar() or 0
+    # 日志统计
+    today_count = (await db.execute(
+        text("SELECT COUNT(*) FROM auto_reply_log WHERE deleted=0 AND DATE(created_time) = CURDATE()")
+    )).scalar() or 0
+    # 每日命中统计
+    daily_rows = (await db.execute(
+        text(
+            "SELECT DATE(created_time) AS stat_date, COUNT(*) AS cnt "
+            "FROM auto_reply_log WHERE deleted=0 AND created_time >= :start "
+            "GROUP BY DATE(created_time) ORDER BY stat_date ASC"
+        ),
+        {"start": start_date},
+    )).mappings().all()
+    daily = [{"date": str(r["stat_date"]), "count": int(r["cnt"])} for r in daily_rows]
+    # 按动作统计
+    action_rows = (await db.execute(
+        text(
+            "SELECT action, COUNT(*) AS cnt FROM auto_reply_log "
+            "WHERE deleted=0 AND created_time >= :start GROUP BY action"
+        ),
+        {"start": start_date},
+    )).mappings().all()
+    actions = [{"action": r["action"] or "unknown", "count": int(r["cnt"])} for r in action_rows]
     return ResultObject.success({
-        "total": total,
-        "enabled": total,
+        "days": safe_days,
+        "totalRules": total_rules,
+        "enabledRules": enabled_rules,
+        "disabledRules": max(total_rules - enabled_rules, 0),
+        "todayCount": today_count,
+        "daily": daily,
+        "actions": actions,
+        "matchedCount": sum(d["count"] for d in daily),
+        "replyCount": sum(a["count"] for a in actions if a["action"] == "auto_send_allowed"),
     })
 
 
