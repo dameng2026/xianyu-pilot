@@ -19,7 +19,7 @@
   "dependencies": {
     "cors": "2.8.6",
     "express": "4.22.2",
-    "playwright": "1.61.1"
+    "playwright": "1.62.0"
   },
   "devDependencies": {
     "@types/cors": "2.8.19",
