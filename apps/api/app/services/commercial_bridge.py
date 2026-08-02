@@ -787,14 +787,19 @@ _CHANGELOG_PLAIN_ENTRY_RE = re.compile(r"^-\s+(.+)$")
 
 def _find_changelog_path() -> Path | None:
     """Locate CHANGELOG.md from a few candidate locations."""
-    candidates = [
-        # Source tree root: apps/api/app/services/ -> parents[4] = project root
-        Path(__file__).resolve().parents[4] / "CHANGELOG.md",
+    candidates: list[Path] = []
+    file_path = Path(__file__).resolve()
+    # Source tree root: apps/api/app/services/ -> parents[4] = project root.
+    # Container path /app/app/services/ has only 4 parents (indices 0-3),
+    # so parents[4] would raise IndexError. Guard it explicitly.
+    if len(file_path.parents) > 4:
+        candidates.append(file_path.parents[4] / "CHANGELOG.md")
+    candidates.extend([
         # Docker container mount point (see docker-compose.yml api volumes)
         Path("/app/CHANGELOG.md"),
         # Current working directory fallback
         Path.cwd() / "CHANGELOG.md",
-    ]
+    ])
     for candidate in candidates:
         try:
             if candidate.is_file():
