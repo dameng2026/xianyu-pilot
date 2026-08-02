@@ -59,7 +59,7 @@ services:
 
   redis:
     <<: *service-defaults
-    image: redis:7.4-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    image: redis:8.0-alpine@sha256:5f61955be8ab2ccee9372b84ae4d4da2e2b156f87281e3f218544055e7ee04d4
     user: redis
     read_only: true
     cap_drop:
