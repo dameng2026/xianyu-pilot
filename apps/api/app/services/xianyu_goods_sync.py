@@ -1865,6 +1865,26 @@ class XianyuItemOperator:
             time.sleep(random.uniform(0.5, 1.5))
         return results
 
+    # ==================== 擦亮商品（所有账号可用） ====================
+
+    POLISH_API = "mtop.taobao.idle.item.polish"
+    POLISH_VERSION = "2.0"
+
+    def polish_item(self, item_id: str) -> bool:
+        """
+        擦亮商品。
+        每天可免费擦亮一次，提升商品曝光。
+        """
+        data = {"itemId": item_id}
+        response = self._call_api(self.POLISH_API, self.POLISH_VERSION, data)
+        ret = response.get("ret", [])
+        ret_msg = ret[0] if isinstance(ret, list) and ret else str(ret)
+        if "SUCCESS" in ret_msg.upper():
+            logger.info("商品擦亮成功: itemId=%s", item_id)
+            return True
+        logger.warning("商品擦亮失败: itemId=%s ret=%s", item_id, ret_msg)
+        return False
+
     # ==================== 改价相关方法（仅鱼小铺） ====================
 
     @staticmethod
@@ -2129,6 +2149,8 @@ class XianyuItemPublisher:
         if TOKEN_EXPIRED in str(ret_msg) or TOKEN_EXPIRED_ALIAS in str(ret_msg) or SESSION_EXPIRED in str(ret_msg):
             raise RuntimeError("登录已过期，请重新登录闲鱼账号")
 
+        if "SUCCESS" not in str(ret_msg).upper():
+            logger.warning("闲鱼 API 返回失败: api=%s ret=%s", api_name, ret_msg)
         logger.info("闲鱼 API 返回: api=%s success=%s", api_name, "SUCCESS" in str(ret_msg))
         return result
 
@@ -2651,7 +2673,8 @@ class XianyuItemPublisher:
         ret = result.get("ret", [])
         ret_msg = ret[0] if isinstance(ret, list) and ret else str(ret)
 
-        if "SUCCESS" in ret_msg:
+        logger.warning("mtop 发布响应: ret=%s", ret_msg)
+        if "SUCCESS" in ret_msg.upper():
             data_body = result.get("data", {})
             if isinstance(data_body, dict):
                 item_id = (

@@ -1067,6 +1067,38 @@ async def is_syncing(
 # ==================== 内部辅助函数 ====================
 
 
+@router.post("/polish")
+async def polish_item(
+    req: dict = {},
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(verify_internal_token),
+):
+    """
+    擦亮商品（每天一次，提升曝光）。
+    请求参数: { xianyuAccountId: int, xyGoodsId: str }
+    """
+    try:
+        account_id = req.get("xianyuAccountId") or req.get("xianyu_account_id")
+        xy_goods_id = req.get("xyGoodsId") or req.get("xy_goods_id")
+        if not account_id or not xy_goods_id:
+            return ResultObject.failed("缺少参数 xianyuAccountId 或 xyGoodsId")
+        account_id = int(account_id)
+        auth = await _get_account_auth(db, account_id)
+        if not auth:
+            return ResultObject.failed("账号未登录或Cookie已失效")
+        cookie_str = decrypt_cookie_if_needed(auth.encrypted_cookie)
+        operator = XianyuItemOperator(cookie_str)
+        success = await asyncio.to_thread(operator.polish_item, str(xy_goods_id))
+        if success:
+            return ResultObject.success({"message": "擦亮成功"})
+        return ResultObject.failed("擦亮失败，请稍后重试")
+    except RuntimeError as e:
+        return ResultObject.failed(f"擦亮失败: {e}")
+    except Exception as e:
+        logger.error("擦亮异常 errorType=%s", type(e).__name__)
+        return ResultObject.internal_error()
+
+
 async def _get_account_auth(db: AsyncSession, account_id: int):
     """获取账号的认证信息（Cookie）"""
     result = await db.execute(
