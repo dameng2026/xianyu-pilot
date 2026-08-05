@@ -79,6 +79,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Token refresher start failed", exc_info=True)
     
+    # 启动飞书长连接（后台线程）
+    try:
+        from app.services.feishu_ws_client import start as start_feishu_ws
+        await start_feishu_ws()
+    except Exception:
+        logger.warning("Feishu long-connection start failed", exc_info=True)
+    
     yield
 
     # 先拒绝新的辅助任务，再依次停止长期生产者；Redis/DB 最后关闭。
@@ -103,6 +110,11 @@ async def lifespan(app: FastAPI):
         await stop_all()
     except Exception:
         logger.warning("WebSocket shutdown failed", exc_info=True)
+    try:
+        from app.services.feishu_ws_client import stop as stop_feishu_ws
+        stop_feishu_ws()
+    except Exception:
+        logger.warning("Feishu long-connection shutdown failed", exc_info=True)
     try:
         await shutdown_background_tasks()
     except Exception:
