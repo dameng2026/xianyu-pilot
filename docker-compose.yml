@@ -226,6 +226,8 @@ services:
     image: ${API_IMAGE:-registry.cn-hangzhou.aliyuncs.com/xianyu-assistant/xianyu-assistant-api:latest}
     user: "10001:10001"
     read_only: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     cap_drop:
       - ALL
     environment:
@@ -244,6 +246,7 @@ services:
       REDIS_PASSWORD_FILE: /run/secrets/redis_password
       JWT_SECRET_FILE: /run/secrets/jwt_secret
       JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-43200000}
+      PYTHONPATH: /app/data/larklib
       JWT_ALGORITHM: HS256
       JWT_ISSUER: ${JWT_ISSUER:-xianyu-assistant-api}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-xianyu-assistant-web}
@@ -301,6 +304,10 @@ services:
       - api_data:/app/data
       # 将仓库根目录的 CHANGELOG.md 只读挂载到容器，供"关于我们"更新日志板块解析展示
       - ./CHANGELOG.md:/app/CHANGELOG.md:ro
+      # 开发模式：直接挂载服务代码，修改后立即生效无需 rebuild
+      - ./apps/api/app/services:/app/app/services:ro
+      - ./apps/api/app/api/v1/routes:/app/app/api/v1/routes:ro
+      - ./apps/api/app/schemas:/app/app/schemas:ro
     secrets:
       - source: admin_password_hash
         target: admin_password_hash
@@ -377,6 +384,8 @@ services:
     extends:
       service: api
     command: ["python", "-m", "app.worker"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SCHEDULER_HEARTBEAT_PATH: /tmp/xianyu-scheduler-heartbeat
       SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS: ${SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS:-60}
@@ -430,6 +439,22 @@ services:
     cpus: ${WEB_CPU_LIMIT:-0.5}
     pids_limit: 128
 
+  # ollama (已注释: 宿主机已有本地 Ollama 运行, 无需 Docker 内再启动)
+  # ollama:
+  #   <<: *service-defaults
+  #   image: ollama/ollama:latest
+  #   environment:
+  #     OLLAMA_HOST: 0.0.0.0
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   networks:
+  #     application:
+  #   mem_limit: ${OLLAMA_MEMORY_LIMIT:-8g}
+  #   mem_reservation: 2g
+  #   cpus: ${OLLAMA_CPU_LIMIT:-4.0}
+  #   expose:
+  #     - "11434"
+
 networks:
   application:
     internal: true
@@ -450,6 +475,7 @@ volumes:
   redis_data:
   api_uploads:
   api_data:
+  # ollama_data: # 已注释: 使用宿主机本地 Ollama
 
 secrets:
   # 所有密钥均从 ./secrets/<name> 文件读取，由 start.sh / start.bat 首次启动时

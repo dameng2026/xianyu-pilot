@@ -204,7 +204,6 @@ const mobileNavOpen = ref(false)
 const mobileDesktopOverride = ref(readMobileDesktopOverride())
 let noticeTimer = null
 let requestBusyTimer = null
-const pendingRequestIds = new Set()
 
 function showNotice(text, type = 'info', retry = null, source = null) {
   globalNotice.value = { ...(source || {}), text, type, retry }
@@ -216,7 +215,6 @@ function showNotice(text, type = 'info', retry = null, source = null) {
 }
 
 function syncRequestBusyState() {
-  pendingRequests.value = pendingRequestIds.size
   if (pendingRequests.value === 0) {
     if (requestBusyTimer) clearTimeout(requestBusyTimer)
     requestBusyTimer = null
@@ -226,22 +224,20 @@ function syncRequestBusyState() {
   if (!requestBusyTimer && !requestBusyVisible.value) {
     requestBusyTimer = setTimeout(() => {
       requestBusyTimer = null
-      if (pendingRequestIds.size > 0) requestBusyVisible.value = true
+      if (pendingRequests.value > 0) requestBusyVisible.value = true
     }, 250)
   }
 }
 
 function onRequestStart(event) {
   if (!shouldTrackGlobalBusy(event.detail)) return
-  const requestId = event.detail?.requestId
-  if (requestId) pendingRequestIds.add(requestId)
+  pendingRequests.value++
   syncRequestBusyState()
 }
 
 function onRequestEnd(event) {
   if (!shouldTrackGlobalBusy(event.detail)) return
-  const requestId = event.detail?.requestId
-  if (requestId) pendingRequestIds.delete(requestId)
+  if (pendingRequests.value > 0) pendingRequests.value--
   syncRequestBusyState()
 }
 
