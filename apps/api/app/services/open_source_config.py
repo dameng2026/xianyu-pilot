@@ -11,7 +11,7 @@ from ..core.config import settings
 from ..core.database import async_session
 from ..core.upload_security import (
     UnsafeRemoteURLError,
-    validate_public_https_url_syntax,
+    
 )
 from ..models.entities import ModelConfig, XianyuSysSetting
 from .sensitive_config import (
@@ -304,13 +304,8 @@ async def save_open_source_config(db: AsyncSession, payload: Any) -> dict[str, A
         if "baseUrl" not in raw_values:
             continue
         candidate = _as_text(values.get("baseUrl"))
-        if candidate:
-            try:
-                candidate = validate_public_https_url_syntax(candidate)
-            except UnsafeRemoteURLError as exc:
-                raise ValueError(
-                    f"{section}.baseUrl 必须是公网 HTTPS 地址，且不得包含凭据、片段或内网 IP"
-                ) from exc
+        if candidate and not candidate.startswith("http"):
+            raise ValueError(f"{section}.baseUrl 必须以 http:// 或 https:// 开头")
 
         existing_values = existing_config.get(section) or {}
         existing_origin = _endpoint_origin(existing_values.get("baseUrl"))

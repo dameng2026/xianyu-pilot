@@ -1420,7 +1420,7 @@ async def websocket_start(
         # 去重：_refresh_token 中的 _auto_solve_captcha_after_failure 可能已触发求解
         # （10 分钟去重窗口），此处检查避免重复启动浏览器实例。
         from app.services.captcha_solver import handle_captcha_for_account
-        from app.services.ws_client import _AUTO_SOLVE_LAST_TS
+        from app.services.captcha_solver import _AUTO_SOLVE_LAST_TS
 
         last_solve_ts = _AUTO_SOLVE_LAST_TS.get(account_id, 0)
         solve_already_running = (time.time() - last_solve_ts) < 600

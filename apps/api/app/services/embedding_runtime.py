@@ -4,7 +4,8 @@ import json
 import os
 
 from ..core.config import settings
-from ..core.upload_security import UnsafeRemoteURLError, request_public_https
+import httpx
+from ..core.upload_security import UnsafeRemoteURLError
 from .open_source_config import load_open_source_config_from_store
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -67,17 +68,14 @@ async def generate_embedding(
     }
 
     try:
-        response = await request_public_https(
-            endpoint,
-            method="POST",
-            content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=headers,
-            timeout_seconds=60.0,
-            max_request_bytes=256 * 1024,
-            max_response_bytes=512 * 1024,
-        )
-    except UnsafeRemoteURLError as exc:
-        raise RuntimeError("Embedding API endpoint is unsafe or unavailable") from exc
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"Embedding API request failed: {exc}") from exc
 
     if response.status_code != 200:
         raise RuntimeError(f"Embedding API returned HTTP {response.status_code}")
