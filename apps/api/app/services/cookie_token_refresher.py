@@ -108,6 +108,10 @@ DISPATCHER_TICK_SECONDS = 60
 # 单次刷新操作超时
 SINGLE_REFRESH_TIMEOUT_SECONDS = 30
 
+# 账号状态加载失败（数据库暂不可达）时的退避重试参数
+STATE_LOAD_BACKOFF_BASE_SECONDS = 5   # 首次重试延迟 5 秒
+STATE_LOAD_BACKOFF_MAX_SECONDS = 300  # 最长退避 5 分钟
+
 
 @dataclass
 class AccountRefreshState:
@@ -862,8 +866,34 @@ async def _dispatcher_loop() -> None:
 
     while _dispatcher_running:
         try:
-            # 同步账号列表
-            await _refresh_states()
+            # 同步账号列表。数据库暂不可达时（容器重启/网络抖动）不能让整个
+            # 调度循环崩掉——否则 30 分钟保活/令牌刷新全部停摆，Cookie 过期后
+            # 只能重新扫码。这里单独容错：指数退避重试，状态降级但周期不丢。
+            state_load_failures = 0
+            while _dispatcher_running:
+                try:
+                    await _refresh_states()
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    state_load_failures += 1
+                    _dispatcher_health_status = "degraded"
+                    delay = min(
+                        STATE_LOAD_BACKOFF_BASE_SECONDS * (2 ** (state_load_failures - 1)),
+                        STATE_LOAD_BACKOFF_MAX_SECONDS,
+                    )
+                    if state_load_failures <= 3 or state_load_failures % 10 == 0:
+                        logger.warning(
+                            "账号状态加载失败（数据库暂不可达?）第%d次，%.0f秒后重试",
+                            state_load_failures, delay,
+                        )
+                    else:
+                        logger.debug(
+                            "账号状态加载失败（数据库暂不可达?）第%d次，%.0f秒后重试",
+                            state_load_failures, delay,
+                        )
+                    await asyncio.sleep(delay)
             _dispatcher_health_status = "ok"
 
             now = time.time()

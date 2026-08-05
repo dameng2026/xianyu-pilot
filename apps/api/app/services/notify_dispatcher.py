@@ -885,7 +885,8 @@ async def notify_cookie_expired(account_id: int, cookie_status: int) -> None:
             f"账号名称：{account_name}\n"
             f"状态：{status_text}\n"
             f"时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"请及时更新该账号的 Cookie。"
+            f"掉线期间买家消息无法接收、自动回复停止。\n"
+            f"请在闲鱼助手后台「账号管理」重新扫码登录该账号。"
         )
         return await dispatch_notification_detailed(
             event_display_name=EVENT_COOKIE_EXPIRED,
