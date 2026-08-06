@@ -72,8 +72,8 @@
 # 在开源版根目录执行，确认前端代码无商业版后端 IP / token 泄露
 # 搜索商业版后端 IP
 grep -rn "1\.12\.66\.249\|154\.9\.254\.86" apps/web/src
-# 搜索桥接 token 值
-grep -rn "jlWgrNxw_lHnJJs0QkU6hNAHrekPZt" apps/web/src
+# 搜索桥接 token / 混淆常量泄漏（前端严禁引用后端 config.py 内部常量）
+grep -rn "_BRIDGE_ENC_TOKEN\|_BRIDGE_SEED_TOKEN\|_resolve_bridge_value" apps/web/src
 # 搜索商业版域名（引流地址 www.xianyupilot.com 除外）
 grep -rn "xianyupilot\.com" apps/web/src | grep -v "www\.xianyupilot\.com"
 ```

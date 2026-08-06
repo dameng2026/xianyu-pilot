@@ -49,10 +49,10 @@
 ### 3.1 桥接 Token
 
 ```
-OPEN_SOURCE_BRIDGE_TOKEN = jlWgrNxw_lHnJJs0QkU6hNAHrekPZt-WUvCHWFPo5MdQOmnkWaqWMOEfVHfiDCTX
+OPEN_SOURCE_BRIDGE_TOKEN = <公开仓库不记录明文，请从 config.py 解码 _BRIDGE_ENC_TOKEN 获取>
 ```
 
-> **注意**：开源版 `config.py` 中**不存储明文 token**，仅存储混淆编码值（`_BRIDGE_ENC_TOKEN` 常量）与解码种子（`_BRIDGE_SEED_TOKEN`），运行时由 `_resolve_bridge_value()` 解码。上方的明文值仅供规则文档记录与一致性校验使用。
+> **注意**：开源版 `config.py` 中**不存储明文 token**，仅存储混淆编码值（`_BRIDGE_ENC_TOKEN` 常量）与解码种子（`_BRIDGE_SEED_TOKEN`），运行时由 `_resolve_bridge_value()` 解码。**本公开仓库不记录明文 token 值**；一致性校验请通过解码 `config.py` 的 `_BRIDGE_ENC_TOKEN` 获得，或参考商业版 `.trae/rules/opensource-bridge-token-consistency.md`。
 
 | 配置项 | 开源版存储方式 | 当前编码值 |
 |--------|--------------|-----------|
@@ -158,8 +158,8 @@ grep "commercial_backend_.*_enabled: bool" apps/api/app/core/config.py
 ### 5.2 确认源码无明文敏感值
 
 ```bash
-# 搜索 config.py 中的明文 token
-grep -n "jlWgrNxw_lHnJJs0QkU6hNAHrekPZt" apps/api/app/core/config.py
+# 搜索 config.py 中的明文 token（token 应仅以 _BRIDGE_ENC_TOKEN 混淆编码存在，无 40+ 位连续明文串）
+grep -nE "[A-Za-z0-9_-]{40,}" apps/api/app/core/config.py
 # 搜索 config.py 中的明文后端 IP
 grep -n "154\.9\.254\.86" apps/api/app/core/config.py
 # 搜索 config.py 中的明文前台 URL
@@ -173,8 +173,8 @@ grep -n "https://www.xianyupilot.com" apps/api/app/core/config.py
 ```bash
 # 搜索前端代码中的商业版后端 IP
 grep -rn "154\.9\.254\.86\|1\.12\.66\.249" apps/web/src
-# 搜索前端代码中的桥接 token
-grep -rn "jlWgrNxw_lHnJJs0QkU6hNAHrekPZt" apps/web/src
+# 搜索前端代码中的桥接 token / 混淆常量泄漏（前端严禁引用后端 config.py 内部常量）
+grep -rn "_BRIDGE_ENC_TOKEN\|_BRIDGE_SEED_TOKEN\|_resolve_bridge_value" apps/web/src
 ```
 
 上述命令应无任何匹配。
