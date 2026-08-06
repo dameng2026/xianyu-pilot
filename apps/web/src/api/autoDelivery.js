@@ -70,6 +70,24 @@ export function previewDeliveryStatement(data) {
   return request({ url: '/auto-delivery/statement/preview', method: 'post', data })
 }
 
+// ─── 发货声明会话（卖家手动处理） ───
+export function listDeliveryStatementSessions(params = {}) {
+  const current = params.current ?? params.page ?? 1
+  const size = params.size ?? 20
+  const query = { page: current, size }
+  if (params.status) query.status = params.status
+  if (params.accountId) query.accountId = params.accountId
+  return request({ url: '/auto-delivery/statement/sessions', method: 'get', params: query })
+}
+
+export function confirmDeliveryStatementSession(id) {
+  return request({ url: `/auto-delivery/statement/sessions/${id}/confirm`, method: 'post' })
+}
+
+export function cancelDeliveryStatementSession(id) {
+  return request({ url: `/auto-delivery/statement/sessions/${id}/cancel`, method: 'post' })
+}
+
 // ─── 发货记录 ───
 export function getDeliveryRecords(params = {}, config = {}) {
   return request({ ...config, url: '/auto-delivery/records', method: 'get', params: pageParams(params) })
@@ -141,4 +159,17 @@ export function applyDeliverySourceToGoods(id, data) {
 
 export function removeDeliverySourceFromGoods(sourceId, goodsId) {
   return request({ url: `/auto-delivery/sources/${sourceId}/goods/${goodsId}`, method: 'delete' })
+}
+
+// ─── 商品多规格 SKU ───
+export function getGoodsSkus(goodsId) {
+  return request({ url: '/goods-sku/list', method: 'post', data: { goodsId } })
+}
+
+export function getGoodsSkuRules(goodsId) {
+  return request({ url: '/goods-sku/rules', method: 'get', params: { goodsId } })
+}
+
+export function saveGoodsSkuRules(goodsId, rules) {
+  return request({ url: '/goods-sku/rules', method: 'put', data: { goodsId, rules } })
 }

@@ -22,6 +22,7 @@ from .routes import (
     dashboard,
     delivery_workflow_compat,
     feishu,
+    fish_shop,
     frontend_compat,
     home_content,
     internal,
@@ -33,6 +34,7 @@ from .routes import (
     navigation,
     order,
     profile,
+    rates,
     refunds,
     quick_reply,
     rag,
@@ -81,6 +83,8 @@ include_router_excluding(
 api_router.include_router(order.router)
 # 退款管理（新增模块，参考商业版实现）
 api_router.include_router(refunds.router)
+# 评价管理（同步商业版评价管理 + 自动评价功能）
+api_router.include_router(rates.router)
 
 # 消息与会话
 api_router.include_router(messages.router)
@@ -89,6 +93,7 @@ api_router.include_router(misc.websocket_router)
 api_router.include_router(misc.media_router)
 api_router.include_router(misc.image_router)
 api_router.include_router(misc.address_dict_router)
+api_router.include_router(misc.goods_sku_router)
 include_router_excluding(
     api_router,
     misc.excel_router,
@@ -147,6 +152,8 @@ api_router.include_router(captcha.router)
 
 # 飞书
 api_router.include_router(feishu.router)
+# 鱼小铺多规格发布/编辑/详情（同步商业版多规格发布功能）
+api_router.include_router(fish_shop.router)
 
 # 内部接口
 api_router.include_router(internal.router)
@@ -194,15 +201,24 @@ include_router_excluding(
     },
 )
 api_router.include_router(admin_data_compat.router)
-# 启用卡密导入校验（商业版同步）
-api_router.include_router(delivery_workflow_compat.router)
-# 自动发货规则路由与 frontend_compat 重复，保持排除；global-config 路由仅在此处提供，启用
-include_router_excluding(
-    api_router,
-    delivery_workflow_compat.delivery_rules_router,
-    excluded={
-        ("GET", "/auto-delivery/rules"),
-    },
+# 启用卡密导入校验（商业版同步）
+
+api_router.include_router(delivery_workflow_compat.router)
+
+# 自动发货规则路由与 frontend_compat 重复，保持排除；global-config 路由仅在此处提供，启用
+
+include_router_excluding(
+
+    api_router,
+
+    delivery_workflow_compat.delivery_rules_router,
+
+    excluded={
+
+        ("GET", "/auto-delivery/rules"),
+
+    },
+
 )
 
 # RAG 知识库

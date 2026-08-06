@@ -56,21 +56,21 @@ OPEN_SOURCE_BRIDGE_TOKEN = jlWgrNxw_lHnJJs0QkU6hNAHrekPZt-WUvCHWFPo5MdQOmnkWaqWM
 
 | 配置项 | 开源版存储方式 | 当前编码值 |
 |--------|--------------|-----------|
-| token | `_BRIDGE_ENC_TOKEN`（混淆编码） | `YVH1R5vehLMNnAGdfZiSMEQENjSaQntxGz+8CRW/omVeS+Fovtasq2e9LaJ4v49rQg4SVb9Df18/ErEwC4jbag==` |
-| 解码种子 | `_BRIDGE_SEED_TOKEN` | `xianyu.bridge.token.v1` |
+| token | `_BRIDGE_ENC_TOKEN`（混淆编码） | `0U34kM8JkBvWvFRjcJp3cCsYy3XY+0TCFYEu4L9fAa/uV+y/6gG4A7ydeFx1vWorLRLvFP36QOwxrCPZoWh4oA==` |
+| 解码种子 | `_BRIDGE_SEED_TOKEN` | `xianyu.bridge.token.3a1c9786` |
 
 ### 3.2 商业版后端地址
 
 ```
-COMMERCIAL_BACKEND_BASE_URL = http://154.9.254.86:82
+COMMERCIAL_BACKEND_BASE_URL = http://211.161.232.54:18080
 ```
 
 > **注意**：开源版 `config.py` 中**不存储明文地址**，仅存储混淆编码值。
 
 | 配置项 | 开源版存储方式 | 当前编码值 |
 |--------|--------------|-----------|
-| 后端地址 | `_BRIDGE_ENC_BACKEND`（混淆编码） | `OdYUt2f/8hPUpVB6jx5xZtNFDafSnw==` |
-| 解码种子 | `_BRIDGE_SEED_BACKEND` | `xianyu.backend.url.v1` |
+| 后端地址 | `_BRIDGE_ENC_BACKEND`（混淆编码） | `noGcALZ+NUyrnGCFtSMSZ3WsvzSbI7znFXRP` |
+| 解码种子 | `_BRIDGE_SEED_BACKEND` | `xianyu.backend.url.e1c1b20b` |
 
 ### 3.3 商业版前台引流地址（可展示给用户）
 
@@ -82,8 +82,8 @@ COMMERCIAL_FRONTEND_URL = https://www.xianyupilot.com
 
 | 配置项 | 开源版存储方式 | 当前编码值 |
 |--------|--------------|-----------|
-| 前台地址 | `_BRIDGE_ENC_FRONTEND`（混淆编码） | `yx3FjgYRZ4ioF9g1j1S1ilXE/6DP619LWD5+` |
-| 解码种子 | `_BRIDGE_SEED_FRONTEND` | `xianyu.frontend.url.v1` |
+| 前台地址 | `_BRIDGE_ENC_FRONTEND`（混淆编码） | `zVB6D3X4NZfv2QYII2yZz0TaNJanh3S97d8j` |
+| 解码种子 | `_BRIDGE_SEED_FRONTEND` | `xianyu.frontend.url.e1896305` |
 
 ## 四、桥接配置加载机制（不得更改）
 
@@ -187,11 +187,11 @@ grep -rn "jlWgrNxw_lHnJJs0QkU6hNAHrekPZt" apps/web/src
 # 解码内置 token 并调用桥接 health 端点
 TOKEN=$(python -c "
 import base64, hashlib
-raw = base64.b64decode('YVH1R5vehLMNnAGdfZiSMEQENjSaQntxGz+8CRW/omVeS+Fovtasq2e9LaJ4v49rQg4SVb9Df18/ErEwC4jbag=='.encode('ascii'))
-key = hashlib.sha256('xianyu.bridge.token.v1'.encode('utf-8')).digest()
+raw = base64.b64decode('0U34kM8JkBvWvFRjcJp3cCsYy3XY+0TCFYEu4L9fAa/uV+y/6gG4A7ydeFx1vWorLRLvFP36QOwxrCPZoWh4oA=='.encode('ascii'))
+key = hashlib.sha256('xianyu.bridge.token.3a1c9786'.encode('utf-8')).digest()
 print(bytes(b ^ key[i % len(key)] for i, b in enumerate(raw)).decode('utf-8'))
 ")
-curl -s -H "X-Open-Source-Token: $TOKEN" http://154.9.254.86:82/admin-api/open-source-bridge/health
+curl -s -H "X-Open-Source-Token: $TOKEN" http://211.161.232.54:18080/admin-api/open-source-bridge/health
 ```
 
 应返回 200 状态码。
@@ -211,7 +211,7 @@ curl -s -H "X-Open-Source-Token: $TOKEN" http://154.9.254.86:82/admin-api/open-s
    from app.core.config import _regenerate_bridge_encoding
    result = _regenerate_bridge_encoding(
        token='<新token>',
-       backend_url='http://154.9.254.86:82',
+       backend_url='http://211.161.232.54:18080',
        frontend_url='https://www.xianyupilot.com',
    )
    for k, v in result.items():

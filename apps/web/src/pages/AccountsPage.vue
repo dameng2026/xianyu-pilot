@@ -14,7 +14,34 @@
         <StatCard title="正常账号" :value="accountMetric(stats.normal)" change="当前页" icon="account" color="green" />
         <StatCard title="需验证" :value="accountMetric(stats.verify)" change="当前页" icon="shield" color="orange" />
         <StatCard title="WS在线" :value="accountMetric(stats.wsOnline)" change="当前页已探测" icon="link" color="purple" />
-        <StatCard title="Cookie异常" :value="accountMetric(stats.cookieWarn)" change="当前页已确认" icon="opportunity" color="orange" />
+      </div>
+      <!-- 滑块求解状态横幅：7 种状态色块图例 + 逐账号求解进度/失败原因/下一步操作/重试按钮 -->
+      <div v-if="dataAvailable === true" class="captcha-banner-section">
+        <div class="captcha-legend">
+          <span class="captcha-legend-title">求解状态：</span>
+          <span class="captcha-legend-item"><i class="captcha-dot dot-blue"></i>求解中</span>
+          <span class="captcha-legend-item"><i class="captcha-dot dot-purple"></i>排队中</span>
+          <span class="captcha-legend-item"><i class="captcha-dot dot-orange"></i>重试中</span>
+          <span class="captcha-legend-item"><i class="captcha-dot dot-green"></i>成功</span>
+          <span class="captcha-legend-item"><i class="captcha-dot dot-red"></i>失败</span>
+          <span class="captcha-legend-item"><i class="captcha-dot dot-red"></i>超时</span>
+          <span class="captcha-legend-item"><i class="captcha-dot dot-gray"></i>预检拒绝</span>
+        </div>
+        <div v-if="captchaAlerts.length" class="captcha-alert-list">
+          <div v-for="alert in captchaAlerts" :key="alert.key" :class="['captcha-alert-banner', alert.type]">
+            <div class="captcha-alert-main">
+              <div class="captcha-alert-head">
+                <strong>{{ alert.accountName || `账号 ${alert.accountId}` }}</strong>
+                <span :class="['captcha-alert-tag', alert.type]">{{ alert.statusText }}</span>
+              </div>
+              <div class="captcha-alert-reason">{{ alert.reason }}</div>
+              <div v-if="alert.nextAction" class="captcha-alert-next">下一步：{{ alert.nextAction }}</div>
+            </div>
+            <button v-if="alert.canRetry" class="captcha-alert-retry" :disabled="alert.type === 'solving' || alert.retrying" @click="handleSolveRetry(alert.accountId)">
+              {{ alert.retrying ? '重试中...' : '重试求解' }}
+            </button>
+          </div>
+        </div>
       </div>
       <div class="toolbar">
         <input v-model="keyword" class="input large" placeholder="搜索昵称 / UID / 备注" @keyup.enter="loadAccounts">
@@ -39,12 +66,19 @@
           <template #account="{ row }"><button type="button" class="product-cell account-selector" :aria-label="`查看账号 ${row.name}`" @click="selectAccount(row.raw)"><img v-if="row.avatar" :src="row.avatar" class="avatar small" alt=""><span v-else class="avatar small avatar-img" aria-hidden="true"></span><span class="account-selector-copy"><strong>{{ row.name }}</strong><em>{{ row.tag }}</em></span></button></template>
           <template #status="{ row }"><Badge :type="row.statusType">{{ row.statusText }}</Badge></template>
           <template #cookie="{ row }"><Badge :type="row.cookieType">{{ row.cookie }}</Badge></template>
+          <template #level="{ row }">
+            <Badge v-if="row.membershipLevel === 'svip'" type="red">SVIP</Badge>
+            <Badge v-else-if="row.membershipLevel === 'vip'" type="orange">VIP</Badge>
+            <Badge v-else-if="row.membershipLevel === 'normal'" type="gray">普通</Badge>
+            <span v-else>{{ row.level }}</span>
+          </template>
           <template #ws="{ row }"><span><i :class="['dot', row.wsConnected === true ? '' : (row.wsConnected === false ? 'red' : 'orange')] "></i>{{ row.ws }}</span></template>
           <template #op="{ row }">
             <button class="link" @click="selectAccount(row.raw)">详情</button>
             <button class="link" @click="refreshProfile(row.raw.id)">刷新资料</button>
             <button class="link" @click="openRescanModal(row.raw)">重新扫码</button>
             <button class="link" :disabled="isAccountSolving(row.raw.id)" @click="solveCaptcha(row.raw)">{{ isAccountSolving(row.raw.id) ? '求解中' : '滑块求解' }}</button>
+            <button class="link" :disabled="polishingAccountId === row.raw.id" @click="handleItemPolish(row.raw)">{{ polishingAccountId === row.raw.id ? '擦亮中...' : '一键擦亮' }}</button>
             <button class="link" :disabled="isWsBusy(row.raw.id) || row.wsConnected == null || row.wsPending" @click="toggleWs(row.raw)">{{ isWsBusy(row.raw.id) ? '确认中...' : (row.wsPending ? '启动中' : (row.wsConnected === true ? '断开' : (row.wsConnected === false ? '连接' : '状态未知'))) }}</button>
             <button class="link danger-text" @click="removeAccount(row.raw.id)">删除</button>
           </template>
@@ -178,6 +212,26 @@
       </div>
     </section>
 
+    <!-- 会员等级卡片 -->
+    <section v-if="selected.membershipLevel" class="drawer-section membership-card">
+      <h4>会员等级</h4>
+      <div class="membership-info">
+        <div class="membership-current">
+          <Badge :type="membershipBadgeType(selected.membershipLevel)">{{ membershipLabel(selected.membershipLevel) }}</Badge>
+          <span v-if="selected.membershipStatus != null" class="membership-status" :class="{ expired: selected.membershipStatus === 0 }">
+            {{ selected.membershipStatus === 1 ? '正常' : '已过期' }}
+          </span>
+        </div>
+        <div class="membership-expire">
+          <span>过期时间：</span>
+          <b>{{ selected.membershipExpiredTime || '永久有效' }}</b>
+        </div>
+        <div class="diagnosis-actions">
+          <button type="button" class="link" @click="openMembershipModal(selected)">设置会员</button>
+        </div>
+      </div>
+    </section>
+
     <!-- 快捷操作 -->
     <section class="drawer-section quick-section">
       <h4>快捷操作</h4>
@@ -293,6 +347,14 @@
         >
           <span>≡</span>
           批量设置
+        </button>
+
+        <button
+          type="button"
+          @click="openMembershipModal(selected)"
+        >
+          <span>★</span>
+          设置会员
         </button>
 </div>
       <div class="retired-feature-note">
@@ -506,8 +568,12 @@
             placeholder="当外部接口不可用时，可回退到这段文本。"
           ></textarea>
         </template>
+        <label class="field-label">每天执行时间 <span>0-23 点</span></label>
+        <select v-model.number="autoRateForm.scheduleHour" class="input large" :disabled="!autoRateLoaded">
+          <option v-for="h in 24" :key="h - 1" :value="h - 1">{{ String(h - 1).padStart(2, '0') }}:00</option>
+        </select>
         <div v-if="autoRateError" class="input-error">{{ autoRateError }}</div>
-        <div class="modal-hint"><Icon name="help" /> 当前先保存账号级自动评价配置，后续自动执行链路会直接复用这里的参数。</div>
+        <div class="modal-hint"><Icon name="help" /> 启用后每天在配置时间自动为待评价订单提交好评（匿名）。仅鱼小铺账号且 Cookie 有效时执行，执行结果可在「评价管理 - 自动评价日志」查看。</div>
         <div class="manual-actions">
           <AppButton @click="closeModal">取消</AppButton>
           <AppButton type="primary" :disabled="!autoRateLoaded || autoRateSaving" @click="saveAutoRateConfig">{{ autoRateSaving ? '保存中...' : '保存' }}</AppButton>
@@ -576,6 +642,47 @@
         </div>
       </section>
 
+      <section v-if="modal==='membership'" class="xy-modal manual-modal auto-rate-modal">
+        <button class="modal-close" @click="closeModal"><Icon name="close" /></button>
+        <h2>设置会员等级</h2>
+        <div class="edit-account-info">
+          <span>账号：</span><b>{{ selected?.nickname || selected?.displayName || selected?.externalUid || selected?.id || '-' }}</b>
+        </div>
+        <label class="field-label required">会员等级 <span>必选</span></label>
+        <select v-model="membershipForm.level" class="input large">
+          <option value="normal">普通（normal）</option>
+          <option value="vip">VIP</option>
+          <option value="svip">SVIP</option>
+        </select>
+        <label class="field-label">过期时间 <span>留空表示永久</span></label>
+        <input
+          v-model="membershipForm.expiredTime"
+          class="input large"
+          type="datetime-local"
+          placeholder="如 2026-12-31 23:59:59"
+        >
+        <div class="modal-hint"><Icon name="help" /> 留空过期时间表示永久会员；设置后账号列表"等级"列将显示对应徽标。</div>
+        <div v-if="membershipError" class="input-error">{{ membershipError }}</div>
+        <div class="manual-actions">
+          <AppButton @click="closeModal">取消</AppButton>
+          <AppButton type="primary" :disabled="membershipSaving" @click="saveMembership">{{ membershipSaving ? '保存中...' : '保存' }}</AppButton>
+        </div>
+      </section>
+
+      <section v-if="modal==='membershipBlocked'" class="xy-modal confirm-delete-modal">
+        <button class="modal-close" @click="closeModal"><Icon name="close" /></button>
+        <div class="confirm-delete-icon" style="background:#fff7e0">
+          <Icon name="help" />
+        </div>
+        <h2>无法使用手动滑块求解</h2>
+        <p class="confirm-delete-desc">{{ membershipBlockReason }}</p>
+        <p class="confirm-delete-desc">请升级到 <b>{{ membershipRequiredLevel }}</b> 会员后使用此功能。</p>
+        <div class="confirm-delete-actions">
+          <AppButton @click="closeModal">取消</AppButton>
+          <AppButton type="primary" @click="confirmMembershipUpgrade">去升级会员</AppButton>
+        </div>
+      </section>
+
       <section v-if="modal==='confirmDelete'" class="xy-modal confirm-delete-modal">
         <button class="modal-close" @click="closeModal"><Icon name="close" /></button>
         <div class="confirm-delete-icon">
@@ -594,10 +701,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import StatCard from '../components/StatCard.vue'; import CardPanel from '../components/CardPanel.vue'; import BaseTable from '../components/BaseTable.vue'; import Badge from '../components/Badge.vue'; import AppButton from '../components/AppButton.vue'; import Icon from '../components/Icon.vue'; import Pagination from '../components/Pagination.vue'; import EmptyState from '../components/EmptyState.vue'
-import { checkAccountAuth, deleteAccount, getAccounts, createAccountByCookie, refreshAccountProfile, updateAccountCookie, getAccountAutoRateConfig, saveAccountAutoRateConfig, getAccountStrategyConfig, saveAccountStrategyConfig } from '../api/accounts.js'
+import { checkAccountAuth, deleteAccount, getAccounts, createAccountByCookie, refreshAccountProfile, updateAccountCookie, getAccountAutoRateConfig, saveAccountAutoRateConfig, getAccountStrategyConfig, saveAccountStrategyConfig, setAccountMembership } from '../api/accounts.js'
 import { startWebSocket, stopWebSocket, websocketStatus } from '../api/websocket.js'
 import { useDebouncedRef } from '../composables/useDebouncedRef.js'
 import { useCaptchaSolver } from '../composables/useCaptchaSolver.js'
+import { getSolveRecords, retrySolve } from '../api/captcha.js'
+import { polishItem } from '../api/items.js'
+import { getAccountMembership } from '../api/accounts.js'
 const emit = defineEmits(['navigate'])
 import { generateQrLogin, getQrLoginStatus, cleanupQrLogin } from '../api/qrlogin.js'
 import { accountName } from '../utils/format.js'
@@ -607,7 +717,7 @@ import { confirmAction } from '../utils/confirmAction.js'
 import { createLatestRequestGuard, listRefreshRequestConfig } from '../utils/latestRequest.js'
 import { friendlyError } from '../utils/friendlyError.js'
 
-const { solveManually, isAccountSolving, getAccountSolveStatus } = useCaptchaSolver()
+const { solveStates, solveManually, isAccountSolving, getAccountSolveStatus } = useCaptchaSolver()
 const modal = ref('')
 const manual = reactive({ accountNote:'', cookie:'' })
 const manualError = ref('')
@@ -652,13 +762,18 @@ const batchAuthSuccess = ref('')
 const autoRateSaving = ref(false)
 const autoRateError = ref('')
 const autoRateLoaded = ref(false)
-const autoRateForm = reactive({ enabled: false, rateType: 'text', textContent: '', apiUrl: '' })
+const autoRateForm = reactive({ enabled: false, rateType: 'text', textContent: '', apiUrl: '', scheduleHour: 9 })
 
 // 消息等待策略配置
 const strategySaving = ref(false)
 const strategyError = ref('')
 const strategyLoaded = ref(false)
 const strategyForm = reactive({ messageExpireTime: 3600, scheduledRedelivery: false, requestRedFlower: false })
+
+// 会员等级配置
+const membershipSaving = ref(false)
+const membershipError = ref('')
+const membershipForm = reactive({ level: 'normal', expiredTime: '' })
 
 // 批量设置统一配置
 const unifiedConfigBusy = ref(false)
@@ -669,6 +784,175 @@ const pendingDeleteId = ref(null)     // 待删除的账号ID
 
 const captchaSolving = ref(false)
 const captchaMessage = ref('')
+
+// 滑块求解状态横幅：7 种状态元数据
+const CAPTCHA_STATUS_META = {
+  solving: { text: '求解中', type: 'solving' },
+  queued: { text: '排队中', type: 'queued' },
+  retrying: { text: '重试中', type: 'solving' },
+  success: { text: '求解成功', type: 'success' },
+  fail: { text: '求解失败', type: 'fail' },
+  timeout: { text: '求解超时', type: 'fail' },
+  precheck_rejected: { text: '预检拒绝', type: 'fail' },
+}
+const activeSolveRecords = ref([])
+const retryingAccountId = ref(null)
+let solveRecordsTimer = null
+
+// 横幅数据源：优先用 SSE 实时状态（solveStates），再补充后端活跃记录
+const captchaAlerts = computed(() => {
+  const alerts = []
+  const seen = new Set()
+  for (const key of Object.keys(solveStates)) {
+    const state = solveStates[key]
+    if (!state) continue
+    const accountId = Number(key)
+    if (seen.has(accountId)) continue
+    seen.add(accountId)
+    const account = accounts.value.find(a => Number(a.id) === accountId)
+    const accountName = state.accountName || (account ? accountTitle(account) : '')
+    const meta = CAPTCHA_STATUS_META[state.status] || { text: state.status || '未知', type: 'solving' }
+    let nextAction = ''
+    let canRetry = false
+    if (state.status === 'success') {
+      nextAction = '可重新启动 WebSocket 连接'
+    } else if (state.status === 'fail' || state.status === 'timeout' || state.status === 'precheck_rejected') {
+      canRetry = true
+      const reasonLower = (state.reason || '').toLowerCase()
+      if (reasonLower.includes('session') || reasonLower.includes('过期') || reasonLower.includes('重新扫码') || reasonLower.includes('登录')) {
+        nextAction = 'Cookie 已失效，需点击"重新扫码"获取新 Cookie（滑块求解无法解决此问题）'
+        canRetry = false
+      } else if (reasonLower.includes('服务暂时不可用') || reasonLower.includes('unavailable')) {
+        nextAction = '求解服务暂时不可用，可点击重试；若持续失败请联系管理员'
+        canRetry = true
+      } else {
+        nextAction = '可点击重试求解；若多次失败建议手动完成验证'
+        canRetry = true
+      }
+    } else if (state.status === 'queued') {
+      nextAction = '请耐心等待，无需重复点击求解'
+    } else if (state.status === 'solving' || state.status === 'retrying') {
+      nextAction = '正在自动求解，请稍候'
+    }
+    alerts.push({
+      key: `sse-${accountId}`,
+      accountId,
+      accountName,
+      statusText: meta.text,
+      type: meta.type,
+      reason: state.reason || '',
+      nextAction,
+      canRetry,
+      retrying: retryingAccountId.value === accountId,
+    })
+  }
+  // 补充后端活跃记录（覆盖 SSE 错过的事件）
+  for (const record of activeSolveRecords.value) {
+    const accountId = Number(record.accountId)
+    if (seen.has(accountId)) continue
+    seen.add(accountId)
+    const meta = CAPTCHA_STATUS_META[record.status] || { text: record.status || '未知', type: 'solving' }
+    alerts.push({
+      key: `db-${record.id}`,
+      accountId,
+      accountName: record.accountName || '',
+      statusText: meta.text,
+      type: meta.type,
+      reason: record.errorMessage || record.solveReason || record.eventDesc || '',
+      nextAction: '可点击重试求解',
+      canRetry: true,
+      retrying: retryingAccountId.value === accountId,
+    })
+  }
+  return alerts
+})
+
+async function loadActiveSolveRecords() {
+  try {
+    const res = await getSolveRecords({ status: 'active' })
+    activeSolveRecords.value = res?.data?.list || []
+  } catch {
+    // 静默失败，不阻塞页面
+  }
+}
+
+async function handleSolveRetry(accountId) {
+  if (!accountId || retryingAccountId.value) return
+  retryingAccountId.value = accountId
+  captchaErrorMsg.value = ''
+  try {
+    const res = await retrySolve({ accountId })
+    const data = res?.data || {}
+    if (data.recovered) {
+      qrSuccessMsg.value = '重试求解成功，Cookie 已恢复'
+      setTimeout(() => { if (qrSuccessMsg.value === '重试求解成功，Cookie 已恢复') qrSuccessMsg.value = '' }, 6000)
+      await loadAccounts()
+    } else if (data.result?.error) {
+      captchaErrorMsg.value = data.result.error
+      setTimeout(() => { if (captchaErrorMsg.value === data.result.error) captchaErrorMsg.value = '' }, 10000)
+    }
+    await loadActiveSolveRecords()
+  } catch (e) {
+    captchaErrorMsg.value = e?.message || '重试求解失败'
+    setTimeout(() => { if (captchaErrorMsg.value === e?.message) captchaErrorMsg.value = '' }, 10000)
+  } finally {
+    retryingAccountId.value = null
+  }
+}
+
+// 一键擦亮
+const polishingAccountId = ref(null)
+async function handleItemPolish(account) {
+  if (!account?.id) return
+  if (polishingAccountId.value) return
+  polishingAccountId.value = account.id
+  error.value = ''
+  try {
+    const res = await polishItem({ accountId: account.id })
+    const data = res?.data || {}
+    qrSuccessMsg.value = data.message || `擦亮完成：成功 ${data.polished || 0}，失败 ${data.failed || 0}`
+    setTimeout(() => { if (qrSuccessMsg.value && qrSuccessMsg.value.startsWith('擦亮')) qrSuccessMsg.value = '' }, 6000)
+  } catch (e) {
+    error.value = '擦亮失败: ' + (e?.message || '未知错误')
+    setTimeout(() => { if (error.value && error.value.startsWith('擦亮失败')) error.value = '' }, 8000)
+  } finally {
+    polishingAccountId.value = null
+  }
+}
+
+// 会员拦截弹窗
+const membershipBlockReason = ref('')
+const membershipRequiredLevel = ref('VIP')
+async function checkMembershipBeforeSolve(account) {
+  try {
+    const res = await getAccountMembership(account.id)
+    const data = res?.data || {}
+    const level = (data.level || 'normal').toLowerCase()
+    // 简化规则：normal 用户拦截，vip/svip 放行
+    if (level === 'normal') {
+      membershipBlockReason.value = '您的会员等级未开启手动滑块求解功能'
+      membershipRequiredLevel.value = 'VIP'
+      modal.value = 'membershipBlocked'
+      return false
+    }
+    // 检查会员状态是否过期
+    if (data.status === 0) {
+      membershipBlockReason.value = '您的会员已过期，请续费后使用手动滑块求解功能'
+      membershipRequiredLevel.value = 'VIP'
+      modal.value = 'membershipBlocked'
+      return false
+    }
+    return true
+  } catch {
+    // 查询失败时不拦截（由后端兜底）
+    return true
+  }
+}
+
+function confirmMembershipUpgrade() {
+  closeModal()
+  emit('navigate', 'profile')
+}
 
 // Cookie 编辑弹窗 - 实时解析预览
 const cookieEditParsed = computed(() => {
@@ -807,6 +1091,7 @@ function closeModal(){
   unifiedConfigBusy.value = false
   autoRateError.value = ''
   strategyError.value = ''
+  membershipError.value = ''
   stopQrPolling()
   resetQrState()
 }
@@ -859,6 +1144,7 @@ async function openAutoRateModal(account = selected.value) {
   autoRateForm.rateType = 'text'
   autoRateForm.textContent = ''
   autoRateForm.apiUrl = ''
+  autoRateForm.scheduleHour = 9
   try {
     const res = await getAccountAutoRateConfig(account.id)
     const data = autoRateConfigOf(res)
@@ -866,6 +1152,7 @@ async function openAutoRateModal(account = selected.value) {
     autoRateForm.rateType = data.rateType
     autoRateForm.textContent = data.textContent
     autoRateForm.apiUrl = data.apiUrl
+    autoRateForm.scheduleHour = (typeof data.scheduleHour === 'number' && data.scheduleHour >= 0 && data.scheduleHour <= 23) ? data.scheduleHour : 9
     autoRateLoaded.value = true
   } catch (e) {
     autoRateError.value = e.message || '加载自动评价配置失败'
@@ -890,6 +1177,7 @@ async function saveAutoRateConfig() {
       rateType: autoRateForm.rateType,
       textContent: autoRateForm.textContent.trim(),
       apiUrl: autoRateForm.apiUrl.trim(),
+      scheduleHour: autoRateForm.scheduleHour,
     })
     autoRateConfigOf(res)
     closeModal()
@@ -900,6 +1188,50 @@ async function saveAutoRateConfig() {
     autoRateError.value = e.message || '保存自动评价配置失败'
   } finally {
     autoRateSaving.value = false
+  }
+}
+
+function membershipLabel(level) {
+  return ({ normal: '普通', vip: 'VIP', svip: 'SVIP' })[level] || '未设置'
+}
+
+function membershipBadgeType(level) {
+  if (level === 'svip') return 'red'
+  if (level === 'vip') return 'orange'
+  return 'gray'
+}
+
+async function openMembershipModal(account = selected.value) {
+  if (!account?.id) return
+  modal.value = 'membership'
+  membershipError.value = ''
+  membershipSaving.value = false
+  membershipForm.level = account.membershipLevel || 'normal'
+  membershipForm.expiredTime = account.membershipExpiredTime || ''
+}
+
+async function saveMembership() {
+  if (!selected.value?.id || membershipSaving.value) return
+  membershipError.value = ''
+  const level = (membershipForm.level || 'normal').toLowerCase()
+  if (!['normal', 'vip', 'svip'].includes(level)) {
+    membershipError.value = '会员等级必须为 normal/vip/svip'
+    return
+  }
+  membershipSaving.value = true
+  try {
+    const payload = { level }
+    const expired = (membershipForm.expiredTime || '').trim()
+    payload.expiredTime = expired ? expired.replace('T', ' ').slice(0, 19) : null
+    await setAccountMembership(selected.value.id, payload)
+    closeModal()
+    qrSuccessMsg.value = '会员等级设置成功'
+    setTimeout(() => { if (qrSuccessMsg.value === '会员等级设置成功') qrSuccessMsg.value = '' }, 4000)
+    await loadAccounts()
+  } catch (e) {
+    membershipError.value = e.message || '保存会员等级失败'
+  } finally {
+    membershipSaving.value = false
   }
 }
 
@@ -927,6 +1259,9 @@ async function openStrategyModal(account = selected.value) {
 async function solveCaptcha(account = selected.value) {
   if (!account?.id) return
   if (captchaSolving.value) return
+  // 会员等级检查：normal 用户拦截，引导升级到 VIP
+  const allowed = await checkMembershipBeforeSolve(account)
+  if (!allowed) return
   captchaSolving.value = true
   captchaMessage.value = ''
   captchaErrorMsg.value = ''
@@ -1144,6 +1479,7 @@ const rows = computed(() => {
       uid: a.externalUid || a.unb || a.id,
       area: a.province && a.city ? `${a.province} ${a.city}` : (a.ipLocation || a.province || '-'),
       level: a.accountLevel || a.sellerLevel || a.fishShopLevel || '-',
+      membershipLevel: a.membershipLevel || null,
       statusText: accountStatus(a.status),
       statusType: a.status === 1 ? 'green' : 'orange',
       cookie: accountCookieLabel(a),
@@ -1631,6 +1967,9 @@ onMounted(() => {
   window.addEventListener('xya-header-action', handleHeaderAction)
   window.addEventListener('xya-sse-event', handleSseEvent)
   loadAccounts()
+  loadActiveSolveRecords()
+  // 每 30 秒刷新一次活跃求解记录，覆盖 SSE 错过的事件
+  solveRecordsTimer = setInterval(loadActiveSolveRecords, 30000)
 })
 onBeforeUnmount(() => {
   accountsRequestGuard.invalidate()
@@ -1638,6 +1977,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('xya-sse-event', handleSseEvent)
   stopQrPolling()
   void cleanupQrLogin()
+  if (solveRecordsTimer) {
+    clearInterval(solveRecordsTimer)
+    solveRecordsTimer = null
+  }
 })
 </script>
 
@@ -2664,4 +3007,158 @@ onBeforeUnmount(() => {
     line-height: 16px;
   }
 }
+
+/* ===== 会员等级卡片 ===== */
+.membership-card {
+  margin-top: 13px;
+  padding: 12px 12px 11px;
+  border: 1px solid #e8eef5;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 7px rgba(31, 65, 113, 0.035);
+}
+.membership-card h4 {
+  margin: 0 0 10px 0;
+}
+.membership-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.membership-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.membership-status {
+  color: #13be77;
+  font-size: 12px;
+  font-weight: 600;
+}
+.membership-status.expired {
+  color: #ef4444;
+}
+.membership-expire {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #687891;
+  font-size: 12px;
+}
+.membership-expire b {
+  color: #34425a;
+  font-weight: 600;
+}
+
+
+/* ===== 滑块求解状态横幅 ===== */
+.captcha-banner-section {
+  margin-bottom: 12px;
+}
+.captcha-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e8eef5;
+  border-radius: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #526079;
+}
+.captcha-legend-title {
+  font-weight: 600;
+  color: #1e2d47;
+}
+.captcha-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.captcha-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.captcha-dot.dot-blue { background: #3b82f6; }
+.captcha-dot.dot-purple { background: #a855f7; }
+.captcha-dot.dot-orange { background: #f97316; }
+.captcha-dot.dot-green { background: #22c55e; }
+.captcha-dot.dot-red { background: #ef4444; }
+.captcha-dot.dot-gray { background: #9ca3af; }
+
+.captcha-alert-list {
+  display: grid;
+  gap: 8px;
+}
+.captcha-alert-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+}
+.captcha-alert-banner.solving { border-color: #bfdbfe; background: #eff6ff; }
+.captcha-alert-banner.queued { border-color: #e9d5ff; background: #faf5ff; }
+.captcha-alert-banner.success { border-color: #bbf7d0; background: #f0fdf4; }
+.captcha-alert-banner.fail { border-color: #fecaca; background: #fef2f2; }
+.captcha-alert-main { flex: 1; min-width: 0; }
+.captcha-alert-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.captcha-alert-head strong {
+  color: #1e2d47;
+  font-size: 13px;
+}
+.captcha-alert-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.captcha-alert-tag.solving { background: #dbeafe; color: #1d4ed8; }
+.captcha-alert-tag.queued { background: #f3e8ff; color: #7e22ce; }
+.captcha-alert-tag.success { background: #dcfce7; color: #15803d; }
+.captcha-alert-tag.fail { background: #fee2e2; color: #b91c1c; }
+.captcha-alert-reason {
+  color: #475569;
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+}
+.captcha-alert-next {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+}
+.captcha-alert-retry {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border: 1px solid #3486ff;
+  border-radius: 5px;
+  background: #fff;
+  color: #3486ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.captcha-alert-retry:hover:not(:disabled) {
+  background: #3486ff;
+  color: #fff;
+}
+.captcha-alert-retry:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 </style>

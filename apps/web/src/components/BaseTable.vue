@@ -14,7 +14,15 @@
             @change="toggleAll"
           />
         </th>
-        <th v-for="c in columns" :key="c.key">{{ c.title }}</th>
+        <th
+          v-for="c in columns"
+          :key="c.key"
+          :class="{ sortable: c.sortable, 'sort-active': isSortActive(c), 'sort-asc': isSortDir(c, 'asc'), 'sort-desc': isSortDir(c, 'desc') }"
+          @click="onHeaderClick(c)"
+        >
+          <span class="th-text">{{ c.title }}</span>
+          <span v-if="c.sortable" class="sort-indicator" aria-hidden="true">{{ sortIndicatorText(c) }}</span>
+        </th>
       </tr>
     </thead>
     <tbody>
@@ -79,9 +87,13 @@ const props = defineProps({
   rowKey: { type: Function, default: null },
   rowInteractive: { type: Boolean, default: false },
   // 选中行的 key 数组，配合 v-model:selectedKeys 使用
-  selectedKeys: { type: Array, default: () => [] }
+  selectedKeys: { type: Array, default: () => [] },
+  // 当前排序字段（与 column.sortField 匹配）
+  sortField: { type: String, default: '' },
+  // 当前排序方向：asc / desc
+  sortOrder: { type: String, default: '' }
 })
-const emit = defineEmits(['row-click', 'update:selectedKeys'])
+const emit = defineEmits(['row-click', 'update:selectedKeys', 'header-click'])
 const instance = getCurrentInstance()
 const rowIsInteractive = computed(() => (
   props.rowInteractive || typeof instance?.vnode?.props?.onRowClick === 'function'
@@ -120,6 +132,19 @@ function toggleRow(row, idx) {
   else set.add(key)
   emit('update:selectedKeys', Array.from(set))
 }
+function onHeaderClick(column) {
+  if (column && column.sortable) emit('header-click', column)
+}
+function isSortActive(column) {
+  return !!column?.sortField && column.sortField === props.sortField
+}
+function isSortDir(column, dir) {
+  return isSortActive(column) && props.sortOrder === dir
+}
+function sortIndicatorText(column) {
+  if (!isSortActive(column)) return '↕'
+  return props.sortOrder === 'asc' ? '↑' : '↓'
+}
 function activateRow(row) {
   if (rowIsInteractive.value) emit('row-click', row)
 }
@@ -154,5 +179,32 @@ function onRowSelectClick(row, idx, e) {
 .base-table tbody tr[tabindex="0"]:focus-visible {
   outline: 3px solid rgba(37, 99, 235, 0.3);
   outline-offset: -3px;
+}
+.base-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color .12s;
+}
+.base-table th.sortable:hover {
+  color: #334155;
+}
+.base-table th.sortable .th-text {
+  display: inline;
+}
+.base-table th.sortable .sort-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  margin-left: 4px;
+  font-size: 12px;
+  color: #cbd5e1;
+  line-height: 1;
+}
+.base-table th.sortable.sort-active .sort-indicator {
+  color: var(--primary, #2563eb);
+}
+.base-table th.sortable.sort-active {
+  color: #1e293b;
 }
 </style>

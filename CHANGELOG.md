@@ -22,6 +22,36 @@
 ### 修复
 - _暂无_
 
+## [v1.7.0] - 2026-08-06
+
+### 新增
+- **滑块求解能力重大强化（与商业版对齐）**：本次更新将商业版滑块求解核心能力同步到开源版，本地求解成功率大幅提升。核心强化：
+  - **三种模拟轨迹方案轮换**：新增 `humanPhysicsDrag`（基于最小急动度剖面 Hogan 1984 / Flash & Hogan 1985 的物理模型拖动）、`humanLikeDrag`（容器内多策略速度拖动）、`humanLikeDragOutOfContainer`（超出容器 Y 大幅偏移拖动）三种方案按 `attempt % 3` 轮换，每次重试使用不同轨迹对抗 Baxia FireyeJS ML 轨迹检测
+  - **Punish 状态智能处理**：新增 `checkPunishedFrame` 检测 Baxia punish URL（含 `_____tmd_____` 或 `punish`），统一视为 `account_punished` 可拖动状态，纠正"punish URL 含 login.token 误判为 cookie_invalid"的旧逻辑（`mtop.taobao.idlemessage.pc.login.token` 是 WS token 刷新 API 名字，不是 Cookie 失效信号）
+  - **假成功防护**：新增 `pageShowsLoadFailure` 检测页面加载失败（`chrome-error://` / `chromewebdata`），防止 `document.body` 为空时 `detectCaptcha` 返回 false + `checkSolved` 返回 true 被误判为"验证通过"
+  - **风险 Cookies 清除**：新增 `RISK_COOKIE_NAMES` 清单（`x5secdata` / `x5sec` / `x5sectag` / `x5pref` / `bx-cookie-test` / `tfstk` / `cbc` / `sca` / `isg`），刷新重试前清除 Baxia 通过 Set-Cookie 重新设置的风险标记，避免"刷新→带 risk cookies→再次 punish→刷新"死循环
+  - **统一 60 秒冷却机制**：`captcha_backoff.py` 由原 30 分钟~6 小时指数退避改为统一 60 秒冷却（与商业版规则对齐），`assert_auto_solve_allowed` 启用实际冷却检查（手动触发 `force=True` 跳过冷却）
+  - **重试与真人行动次数强化**：默认重试次数 4 → 5 次，真人行动模拟次数 1 → 2 次
+  - **跨平台支持**：完整支持 Windows / Linux / Ubuntu / Docker 环境，Docker 镜像使用 `mcr.microsoft.com/playwright:v1.61.1-noble` 预装 Chromium 与所有系统依赖，自动处理 Linux 沙箱（`PLAYWRIGHT_DISABLE_SANDBOX`）、容器无头模式（`CRAWLER_FORCE_HEADLESS`）、共享内存配置（`shm_size: 2g`）
+  - 实际测试成功率高达 70% 以上，与线上版滑块求解功能一致
+- **本地裸机一键部署**：新增 `start-local.sh`（Linux/macOS）一键本地部署脚本与 `scripts/setup-local.sh` 初始化向导，无需 Docker 即可在本机运行。首次运行自动完成：生成 `.env` 与随机密钥 → 生成 admin bcrypt hash → 创建 MySQL 数据库与用户 → 安装 Python/Node 依赖与 Playwright Chromium → 数据库迁移 → 启动 API / Scheduler Worker / Crawler / Web 四个服务 → 分阶段健康检查并输出访问地址；配套 `status-local.sh` / `stop-local.sh` 管理脚本
+- **鱼小铺多规格商品发布与编辑**：新增鱼小铺多规格（SKU）商品发布/编辑/详情接口与「商品编辑」独立页面（`fish-shop-edit`），支持多规格属性配置、规格属性键管理、发布快照保存与编辑回显兜底，操作列新增「编辑」按钮一键进入编辑页（仅鱼小铺账号可用，普通账号与本地草稿给出友好提示）
+- **评价管理模块**：新增「评价管理」页面与评价同步/创建/概览接口，仅鱼小铺账号可用；支持按账号同步买家评价、分类/关键词筛选、查看评价详情；内置自动评价调度器（可手动触发、查询执行日志与调度状态）
+- **售整自动上架**：商品售罄后自动重发上架，支持手动一键重发、开关式自动重发与发布快照链路追溯（重发后的新商品可继续链式重发）；订单同步检测到售出订单时自动触发
+- **商品一键擦亮**：商品管理新增「一键擦亮」，同步调用闲鱼擦亮接口提升商品曝光（最多支持 50 个商品批量擦亮）
+- **账号会员等级管理**：账号详情与会员接口新增会员等级（`xianyu_account_membership`），为后续差异化能力提供基础
+- **货源库新增货源视觉升级**：新增货源/编辑货源表单全新视觉（对齐商业版）——双栏布局、规范表单控件、正文/多条正文（文本+图片混合发货）分段编辑、发送类型设置卡片、卡密分组选择与库存余量展示
+
+### 变更
+- **滑块求解冷却机制对齐商业版**：`captcha_backoff.py` 由原 30 分钟~6 小时累进冷却（`BASE_COOLDOWN_SEC * 2^(fail_count-1)`）改为统一 60 秒冷却（`MAX_COOLDOWN_SEC = 60`），累进冷却已废弃。冷却的唯一目的是避免瞬时高频触发 Baxia 风控的"保护性间隔"，不是对账号的"惩罚"，最大 1 分钟，超过 1 分钟会阻止 Cookie 有效账号快速重连 WS
+- **Docker crawler 共享内存提升**：`docker-compose.yml` 中 crawler 服务 `shm_size` 默认值从 `512m` 提升至 `2g`，避免 Chromium 在容器内因共享内存不足导致页面渲染崩溃（`Target closed` / `Session deleted`）
+
+### 优化
+- **本地部署体验**：`start-local.bat` 首次运行自动调用 `scripts/setup-local.ps1` 完成全部初始化（原需手动复制 `.env`、生成 hash、建库建用户），与 Docker 版 `start.sh` 保持一致的一键体验
+
+### 修复
+- **商业版桥接后端地址更新**：桥接默认后端地址由已失效的 `154.9.254.86:82` 更新为当前生效的 `211.161.232.54:18080`（混淆编码存储），修复开源版「首页运营/广告/反馈」等桥接业务无法使用的问题
+
 ## [v1.6.0] - 2026-07-29
 
 ### 新增

@@ -104,6 +104,7 @@ class RealtimeDeliveryCommand:
     quantity_requested: int
     card_group_id: int | None
     auto_confirm_shipment: bool
+    segments: list = None
 
 
 @dataclass(frozen=True)
@@ -149,10 +150,11 @@ class PreparedDeliveryMessage:
     error_code: str | None = None
     message: str = ""
     retry_safe: bool = False
+    segments: list | None = None
 
     @classmethod
-    def ready(cls, content: str) -> "PreparedDeliveryMessage":
-        return cls(status="ready", content=content)
+    def ready(cls, content: str, segments: list | None = None) -> "PreparedDeliveryMessage":
+        return cls(status="ready", content=content, segments=segments)
 
     @classmethod
     def failed(
@@ -268,6 +270,7 @@ class RealtimeDeliveryGateway(Protocol):
         self,
         lease: RealtimeDeliveryAttemptLease,
         content: str,
+        segments: list | None = None,
     ) -> ExternalDeliveryResult: ...
 
     async def confirm_shipment(
@@ -375,7 +378,7 @@ class SqlRealtimeDeliveryStore:
                 )
             self._mark_message_sending(attempt)
             await self._db.commit()
-            return PreparedDeliveryMessage.ready(content)
+            return PreparedDeliveryMessage.ready(content, segments=getattr(command, "segments", None))
 
         if mode not in {"card", "kami"}:
             return PreparedDeliveryMessage.failed(
@@ -972,6 +975,7 @@ class XianyuRealtimeDeliveryGateway:
         self,
         lease: RealtimeDeliveryAttemptLease,
         content: str,
+        segments: list | None = None,
     ) -> ExternalDeliveryResult:
         from .ws_delivery_handler import send_delivery_message_result
 
@@ -980,6 +984,7 @@ class XianyuRealtimeDeliveryGateway:
             lease.session_id,
             lease.peer_id,
             content,
+            segments=segments,
         )
         status = result.get("status")
         if status == "confirmed":
@@ -1136,7 +1141,7 @@ class RealtimeDeliveryCoordinator:
                 return self._outcome(lease)
 
             try:
-                result = await self._gateway.send_message(lease, prepared.content)
+                result = await self._gateway.send_message(lease, prepared.content, segments=prepared.segments)
             except Exception as exc:
                 logger.error(
                     "Realtime delivery message call ended unexpectedly attemptId=%d errorType=%s",

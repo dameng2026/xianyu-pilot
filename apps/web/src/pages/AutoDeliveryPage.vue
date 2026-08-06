@@ -157,9 +157,99 @@
             <button v-for="timing in configTimings" :key="timing.key" :class="['config-tab', { active: configTiming === timing.key }]" @click="switchTiming(timing.key)">
               {{ timing.label }}
             </button>
+            <button v-if="skuList.length" :class="['config-tab', { active: configTiming === 'skuRules' }]" @click="switchTiming('skuRules')">
+              多规格配置
+            </button>
           </div>
 
-          <div class="form-grid">
+          <div v-if="configTiming === 'skuRules'" class="form-grid sku-rules-grid">
+            <div class="form-section">
+              <div class="form-section-title">
+                多规格发货配置
+                <span class="subtle" v-if="skuList.length">（共 {{ skuList.length }} 个 SKU）</span>
+              </div>
+              <p v-if="skuError" class="danger-text">{{ skuError }}</p>
+              <p v-else-if="!skuList.length && !skuLoading" class="subtle">该商品暂无 SKU 数据。</p>
+              <p v-else class="subtle">为每个 SKU 独立配置「付款后发货 / 确认收货后赠送 / 好评后赠送」三个时机的发货规则；未命中时回退到商品通用配置。</p>
+              <div class="toolbar" style="justify-content:flex-start; margin-bottom: 12px;">
+                <AppButton size="small" :disabled="!isMultiSpecGoods" @click="applyToAllSkus('payDelivery')">应用通用付款配置</AppButton>
+                <AppButton size="small" :disabled="!isMultiSpecGoods" @click="applyToAllSkus('confirmDelivery')">应用通用收货配置</AppButton>
+                <AppButton size="small" :disabled="!isMultiSpecGoods" @click="applyToAllSkus('reviewDelivery')">应用通用好评配置</AppButton>
+                <span v-if="skuSuccess" class="sku-success-text">{{ skuSuccess }}</span>
+              </div>
+            </div>
+            <div v-if="skuLoading" class="form-section"><p class="subtle">加载 SKU 数据中...</p></div>
+            <div v-else>
+              <div v-for="(rule, idx) in skuRules" :key="rule.skuId || idx" class="sku-card">
+                <div class="sku-card-header">
+                  <div class="sku-card-title">{{ rule.propertyText || rule.propertyKey || ('SKU ' + (idx + 1)) }}</div>
+                  <span class="subtle">SKU ID: {{ rule.skuId }}</span>
+                </div>
+                <div class="sku-timing-grid">
+                  <div v-for="timing in configTimings" :key="timing.key" class="sku-timing-cell">
+                    <div class="sku-timing-header">
+                      <label class="checkbox-label">
+                        <input type="checkbox" :checked="rule[timing.key].enabled === 1" @change="toggleSkuTiming(rule, timing.key, $event.target.checked)" />
+                        {{ timing.label }}
+                      </label>
+                    </div>
+                    <div v-if="rule[timing.key].enabled === 1" class="sku-timing-body">
+                      <div class="form-row">
+                        <label>发货模式</label>
+                        <select v-model="rule[timing.key].mode" class="input" style="max-width:180px">
+                          <option value="text">文本发货</option>
+                          <option value="card">卡密发货</option>
+                        </select>
+                      </div>
+                      <div v-if="rule[timing.key].mode === 'text'" class="form-row">
+                        <label>关联货源库</label>
+                        <select v-model="rule[timing.key].sourceId" class="input" style="max-width:280px" :disabled="sourcesAvailable === false">
+                          <option value="">不关联</option>
+                          <option v-for="source in textSources" :key="source.id" :value="source.id">{{ source.title }}</option>
+                        </select>
+                      </div>
+                      <div v-if="rule[timing.key].mode === 'card'" class="form-row">
+                        <label>卡密分组</label>
+                        <select v-model="rule[timing.key].cardGroupId" class="input" style="max-width:280px" :disabled="cardGroupsAvailable === false">
+                          <option value="">请选择</option>
+                          <option v-for="group in cardGroups" :key="group.id" :value="group.id">{{ group.groupName }}（余 {{ group.remainCount || 0 }}）</option>
+                        </select>
+                      </div>
+                      <div class="form-row">
+                        <label>{{ rule[timing.key].mode === 'text' ? '发货内容' : '卡密模板' }}</label>
+                        <textarea
+                          v-if="rule[timing.key].mode === 'text'"
+                          v-model="rule[timing.key].content"
+                          rows="2"
+                          style="width:100%"
+                          placeholder="买家将收到的发货内容"
+                        ></textarea>
+                        <textarea
+                          v-else
+                          v-model="rule[timing.key].cardTemplate"
+                          rows="2"
+                          style="width:100%"
+                          placeholder="例如：您的卡密为：{卡密}"
+                        ></textarea>
+                      </div>
+                      <div class="form-row">
+                        <label>自动确认发货</label>
+                        <label class="checkbox-label">
+                          <input type="checkbox" v-model="rule[timing.key].autoConfirmShipment" />
+                          发送成功后确认发货
+                        </label>
+                      </div>
+                    </div>
+                    <div v-else class="sku-timing-body-disabled">
+                      未启用，将回退到商品通用「{{ timing.label }}」配置
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="configTiming !== 'skuRules'" class="form-grid">
             <div class="form-section">
               <div class="form-section-title">基础设置</div>
               <div class="form-row">
@@ -298,7 +388,8 @@
 
           <div class="config-modal-footer">
             <AppButton @click="closeConfig">取消</AppButton>
-            <AppButton type="primary" :loading="configSaving" :disabled="configSaveDisabled" @click="saveConfig">保存配置</AppButton>
+            <AppButton v-if="configTiming === 'skuRules'" type="primary" :loading="skuSaving" @click="saveSkuRules">保存 SKU 配置</AppButton>
+            <AppButton v-else type="primary" :loading="configSaving" :disabled="configSaveDisabled" @click="saveConfig">保存配置</AppButton>
           </div>
           </div>
         </div>
@@ -378,7 +469,10 @@ import {
   getGoodsDeliveryConfigs,
   saveGoodsDeliveryConfig,
   scanPendingOrders as scanApi,
-  recoverPendingDeliveries as recoverApi
+  recoverPendingDeliveries as recoverApi,
+  getGoodsSkus,
+  getGoodsSkuRules,
+  saveGoodsSkuRules
 } from '../api/autoDelivery.js'
 import { accountName } from '../utils/format.js'
 import { recordsOf } from '../utils/apiData.js'
@@ -401,6 +495,13 @@ const accountsAvailable = ref(null)
 const cardGroupsAvailable = ref(null)
 const configSaving = ref(false)
 const showBatchDialog = ref(false)
+const skuList = ref([])
+const skuRules = ref([])
+const skuLoading = ref(false)
+const skuSaving = ref(false)
+const skuError = ref('')
+const skuSuccess = ref('')
+const isMultiSpecGoods = computed(() => Array.isArray(skuList.value) && skuList.value.length > 0)
 const batchLoading = ref(false)
 const current = ref(1)
 const pageSize = ref(20)
@@ -794,16 +895,156 @@ function openConfig(goods, timing) {
   configTarget.value = { goods }
   configTiming.value = timing || 'payDelivery'
   fillConfigForm(goods._config?.[configTiming.value] || {})
+  // 异步加载 SKU 数据（多规格发货功能），失败时不阻断配置弹窗
+  loadSkuData(goods.id)
   return true
 }
 
 function switchTiming(timing) {
   configTiming.value = timing
+  if (timing === 'skuRules') return  // SKU 配置 tab 不复用主表单
   fillConfigForm(configTarget.value?.goods?._config?.[timing] || {})
 }
 
 function closeConfig() {
   configTarget.value = null
+  skuList.value = []
+  skuRules.value = []
+  skuError.value = ''
+  skuSuccess.value = ''
+}
+
+async function loadSkuData(goodsId) {
+  skuList.value = []
+  skuRules.value = []
+  skuError.value = ''
+  if (!goodsId) return
+  skuLoading.value = true
+  try {
+    const [skuRes, rulesRes] = await Promise.all([
+      getGoodsSkus(goodsId),
+      getGoodsSkuRules(goodsId)
+    ])
+    const skus = recordsOf(skuRes.data) || []
+    const rules = rulesRes.data
+    skuList.value = skus
+    skuRules.value = Array.isArray(rules) ? mergeSkuRules(skus, rules) : []
+  } catch (e) {
+    // SKU 接口失败不影响主配置流程，仅记录告警
+    skuError.value = e?.message || 'SKU 信息加载失败，多规格配置暂不可用'
+    skuList.value = []
+    skuRules.value = []
+  } finally {
+    skuLoading.value = false
+  }
+}
+
+// 将 SKU 列表与已保存的 SKU 规则合并，确保每个 SKU 都有一条含三时机配置的可编辑规则
+function mergeSkuRules(skus, savedRules) {
+  const ruleMap = new Map()
+  for (const rule of savedRules) {
+    if (rule && rule.skuId) ruleMap.set(String(rule.skuId), rule)
+  }
+  return skus.map(sku => {
+    const saved = ruleMap.get(String(sku.skuId)) || {}
+    return {
+      skuId: sku.skuId,
+      propertyKey: sku.propertyKey || saved.propertyKey || '',
+      propertyText: sku.propertyText || saved.propertyText || '',
+      payDelivery: normalizeSkuTimingConfig(saved.payDelivery),
+      confirmDelivery: normalizeSkuTimingConfig(saved.confirmDelivery),
+      reviewDelivery: normalizeSkuTimingConfig(saved.reviewDelivery)
+    }
+  })
+}
+
+function normalizeSkuTimingConfig(raw) {
+  const cfg = raw && typeof raw === 'object' ? raw : {}
+  return {
+    enabled: cfg.enabled === 1 || cfg.enabled === true ? 1 : 0,
+    mode: ['text', 'card'].includes(cfg.mode) ? cfg.mode : 'text',
+    sourceId: cfg.sourceId || '',
+    sourceTitle: cfg.sourceTitle || '',
+    cardGroupId: cfg.cardGroupId || '',
+    cardTemplate: cfg.cardTemplate || '',
+    header: cfg.header || '',
+    content: cfg.content || '',
+    footer: cfg.footer || '',
+    autoConfirmShipment: !!cfg.autoConfirmShipment
+  }
+}
+
+// 切换 SKU 单个时机的启用状态（启用时若无默认值则给 text 模式）
+function toggleSkuTiming(rule, timing, enabled) {
+  const cfg = rule[timing]
+  cfg.enabled = enabled ? 1 : 0
+  if (!enabled) return
+  if (!cfg.mode) cfg.mode = 'text'
+}
+
+// 批量应用：将商品通用配置应用到所有 SKU 的指定时机
+function applyToAllSkus(timing) {
+  if (!isMultiSpecGoods.value) return
+  const sourceConfig = configTarget.value?.goods?._config?.[timing] || {}
+  const template = normalizeSkuTimingConfig(sourceConfig)
+  template.enabled = sourceConfig.enabled === 1 || sourceConfig.enabled === true ? 1 : 0
+  for (const rule of skuRules.value) {
+    rule[timing] = JSON.parse(JSON.stringify(template))
+  }
+  skuSuccess.value = `已将「${currentTimingLabelFor(timing)}」的通用配置应用到全部 ${skuRules.value.length} 个 SKU`
+  setTimeout(() => { skuSuccess.value = '' }, 3000)
+}
+
+function currentTimingLabelFor(timing) {
+  return configTimings.find(item => item.key === timing)?.label || timing
+}
+
+async function saveSkuRules() {
+  if (!configTarget.value || !isMultiSpecGoods.value) return
+  skuSaving.value = true
+  error.value = ''
+  success.value = ''
+  skuError.value = ''
+  skuSuccess.value = ''
+  try {
+    // 仅提交启用了至少一个时机的 SKU 规则；未启用的 SKU 不写入（运行时回退商品通用配置）
+    const payload = skuRules.value
+      .filter(rule => ['payDelivery', 'confirmDelivery', 'reviewDelivery']
+        .some(t => rule[t]?.enabled === 1))
+      .map(rule => ({
+        skuId: rule.skuId,
+        propertyKey: rule.propertyKey,
+        propertyText: rule.propertyText,
+        payDelivery: cleanSkuTimingForSave(rule.payDelivery),
+        confirmDelivery: cleanSkuTimingForSave(rule.confirmDelivery),
+        reviewDelivery: cleanSkuTimingForSave(rule.reviewDelivery)
+      }))
+    await saveGoodsSkuRules(configTarget.value.goods.id, payload)
+    skuSuccess.value = `已保存 ${payload.length} 个 SKU 的发货规则`
+    await loadSkuData(configTarget.value.goods.id)
+    await loadGoods()
+  } catch (e) {
+    skuError.value = e.message || '保存 SKU 配置失败'
+    error.value = e.message || '保存 SKU 配置失败'
+  } finally {
+    skuSaving.value = false
+  }
+}
+
+function cleanSkuTimingForSave(cfg) {
+  const c = cfg || {}
+  return {
+    enabled: c.enabled === 1 ? 1 : 0,
+    mode: c.mode || 'text',
+    sourceId: c.mode === 'text' && c.sourceId ? Number(c.sourceId) : null,
+    sourceTitle: c.mode === 'text' ? (c.sourceTitle || '') : '',
+    cardGroupId: c.mode === 'card' && c.cardGroupId ? Number(c.cardGroupId) : null,
+    cardTemplate: c.cardTemplate || '',
+    header: c.header || '',
+    content: c.content || '',
+    footer: c.footer || '',
+    autoConfirmShipment: !!c.autoConfirmShipment
+  }
 }
 
 async function saveConfig() {
@@ -1623,6 +1864,71 @@ onBeforeUnmount(() => {
 
   .subtle {
     font-size: 12px;
+  }
+}
+
+.sku-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  background: #fafbfc;
+}
+.sku-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.sku-card-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1f2937;
+}
+.sku-card-body {
+  border-top: 1px dashed #e5e7eb;
+  padding-top: 10px;
+}
+.sku-rules-grid {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.sku-success-text {
+  color: #16a34a;
+  font-size: 13px;
+}
+.sku-timing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.sku-timing-cell {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+.sku-timing-header {
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.sku-timing-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sku-timing-body-disabled {
+  color: #98a2b3;
+  font-size: 12px;
+  padding: 4px 0;
+}
+.sku-timing-body .form-row {
+  margin-bottom: 0;
+}
+@media (max-width: 900px) {
+  .sku-timing-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>

@@ -98,7 +98,32 @@
             @row-click="selectProduct"
           >
             <template #info="{row}"><div class="product-cell"><img v-if="row.coverPic" :src="row.coverPic" class="product-thumb" alt="" @error="onCoverError"><div v-else class="product-thumb product-thumb-placeholder"></div><div class="product-info-text"><strong :title="row.raw?.title || row.name">{{ row.name }}</strong><em>ID：{{ row.xyGoodId }}</em></div></div></template>
-            <template #price="{row}"><div class="cell-price">{{ row.price }}</div></template>
+            <template #price="{row}">
+              <div v-if="editingPrice.itemId === itemBusyKey(row)" class="cell-price-edit">
+                <div class="price-edit-input-wrap">
+                  <span class="price-edit-prefix">¥</span>
+                  <input
+                    v-model="editingPrice.inputValue"
+                    type="text"
+                    inputmode="decimal"
+                    class="price-edit-input"
+                    :disabled="editingPrice.loading"
+                    @keyup.enter="confirmEditPrice(row)"
+                    @keyup.esc="cancelEditPrice"
+                    @blur="onPriceInputBlur(row)"
+                    @click.stop
+                  >
+                </div>
+                <div v-if="editingPrice.error" class="price-edit-error">{{ editingPrice.error }}</div>
+              </div>
+              <div
+                v-else
+                class="cell-price"
+                :class="{ 'cell-price-editable': canEditPrice(row), 'cell-price-locked': !canEditPrice(row) && row.xyGoodId && !String(row.xyGoodId).startsWith('local:') }"
+                :title="priceCellTitle(row)"
+                @click.stop="onPriceCellClick(row)"
+              >{{ row.price }}</div>
+            </template>
             <template #stock="{row}"><div class="cell-center cell-muted">{{ row.stock }}</div></template>
             <template #sku="{row}"><div class="cell-center cell-muted">{{ row.sku }}</div></template>
             <template #status="{row}">
@@ -120,10 +145,12 @@
               <Badge v-else :type="row.type==='卡密'?'purple':row.type==='自定义'?'blue':'green'">{{ row.type }}</Badge>
             </template>
             <template #reply="{row}"><div class="cell-center"><Badge v-if="row.replyOn === null" type="gray">未知</Badge><ToggleSwitch v-else :on="row.replyOn" @click.stop="toggleReply(row)" /></div></template>
+            <template #autorelist="{row}"><div class="cell-center"><Badge v-if="row.autoRelistOn === null" type="gray">未知</Badge><ToggleSwitch v-else :on="row.autoRelistOn" @click.stop="toggleAutoRelist(row)" /></div></template>
             <template #onsale="{row}"><div class="cell-center"><AppButton v-if="row.isLocalDraft" type="primary" @click.stop="publishDraft(row)">发布</AppButton><Badge v-else-if="row.statusCode === null" type="gray">未知</Badge><ToggleSwitch v-else :on="row.statusCode===0" @click.stop="toggleOnShelf(row)" /></div></template>
             <template #op="{row}">
               <div class="op-buttons">
                 <button class="link" @click.stop="selectProduct(row)">详情</button>
+                <button class="link" :disabled="isItemBusy(row) || syncing || autoSyncState.active" @click.stop="goToFishShopEdit(row)">编辑</button>
                 <button v-if="!row.isLocalDraft" class="link" :disabled="isItemBusy(row) || syncing || autoSyncState.active" @click.stop="refreshSingle(row)">同步</button>
                 <button v-if="row.isLocalDraft" class="link" :disabled="isItemBusy(row)" @click.stop="publishDraft(row)">{{ isItemBusy(row) ? '处理中' : '发布' }}</button>
                 <button class="link danger-text" :disabled="isItemBusy(row) || isRemoteDeleteLocked(row) || isOffShelfBlockingOtherWrites(row)" @click.stop="deleteProduct(row)">
@@ -207,6 +234,7 @@
         <div class="grid drawer-metrics">
           <div class="metric-tile"><span>自动发货</span><b :class="{'text-green':selected.deliveryOn === true,'text-gray':selected.deliveryOn !== true}">{{ switchStateText(selected.deliveryOn) }}</b></div>
           <div class="metric-tile"><span>自动回复</span><b :class="{'text-green':selected.replyOn === true,'text-gray':selected.replyOn !== true}">{{ switchStateText(selected.replyOn) }}</b></div>
+          <div class="metric-tile"><span>售整自动上架</span><b :class="{'text-green':selected.autoRelistOn === true,'text-gray':selected.autoRelistOn !== true}">{{ switchStateText(selected.autoRelistOn) }}</b></div>
           <div class="metric-tile"><span>账号</span><b>{{ accountName(accounts.find(a => a.id === Number(selected.xianyuAccountId)) || {}) || '-' }}</b></div>
         </div>
         <div class="grid drawer-actions">
@@ -230,7 +258,7 @@ import { getLiteAccounts } from '../api/accounts.js'
 import { getBusinessSettings } from '../api/businessSettings.js'
 import { updateProductAutoReplyScope } from '../api/autoReplyScope.js'
 import { deleteGoodsLocal, getGoodsDetail, getGoods, getGoodsStats, updateGoods } from '../api/goods.js'
-import { refreshItems, getSyncProgress, getSyncTasks, publishItem, offShelfItem, updateItemPrice, remoteDeleteItem } from '../api/items.js'
+import { refreshItems, getSyncProgress, getSyncTasks, publishItem, offShelfItem, updateItemPrice, remoteDeleteItem, toggleAutoRelist as toggleAutoRelistApi } from '../api/items.js'
 import { accountName, formatMoney, formatNumber, shortText } from '../utils/format.js'
 import { accountAuthState } from '../utils/accountAuth.js'
 import { resolveTrustedMediaUrl } from '../utils/safeMediaUrl.js'
@@ -275,9 +303,28 @@ const syncQuery = reactive({ status: '', current: 1, size: 5 })
 const notice = ref({ type: '', text: '' })
 const selected = ref(null)
 const query = reactive({ xianyuAccountId: '', status: '', keyword: '', pageNum: 1, pageSize: 50 })
+
+function goToFishShopEdit(row) {
+  if (!row) return
+  if (row.isLocalDraft) {
+    showNotice('warn', '本地草稿商品请使用「发布」按钮发布，暂不支持进入编辑页')
+    return
+  }
+  const accountId = row.xianyuAccountId || Number(query.xianyuAccountId)
+  const itemId = row.xyGoodId
+  if (!accountId || !itemId || String(itemId).startsWith('local:')) {
+    showNotice('warn', '商品信息不完整，无法进入编辑页')
+    return
+  }
+  if (!row.isFishShop) {
+    showNotice('warn', '当前账号不是鱼小铺账号，只有鱼小铺账号支持进入商品编辑页')
+    return
+  }
+  location.hash = `#/fish-shop-edit/${accountId}/${itemId}`
+}
 // 每页条数可选项，默认 50
 const pageSizes = [50, 100, 200, 300, 500, 1000]
-const cols=[{key:'info',title:'商品信息'},{key:'price',title:'价格'},{key:'stock',title:'库存'},{key:'sku',title:'SKU'},{key:'status',title:'状态'},{key:'type',title:'发货类型'},{key:'reply',title:'自动回复'},{key:'onsale',title:'在售'},{key:'time',title:'更新时间'},{key:'op',title:'操作'}]
+const cols=[{key:'info',title:'商品信息'},{key:'price',title:'价格'},{key:'stock',title:'库存'},{key:'sku',title:'SKU'},{key:'status',title:'状态'},{key:'type',title:'发货类型'},{key:'reply',title:'自动回复'},{key:'autorelist',title:'售整自动上架'},{key:'onsale',title:'在售'},{key:'time',title:'更新时间'},{key:'op',title:'操作'}]
 const syncCols=[{key:'createdTime',title:'创建时间'},{key:'status',title:'状态'},{key:'progress',title:'进度'},{key:'summary',title:'统计'},{key:'durationSeconds',title:'耗时(s)'},{key:'error',title:'错误'}]
 let syncPollCanceled = false
 const statusMap = { 0: '在售', 1: '下架/草稿', 2: '已售出', 3: '已删除' }
@@ -297,6 +344,14 @@ const AUTO_DELIVERY_FOCUS_GOODS_KEY = 'xya:auto-delivery-focus-goods-id'
 const EXTERNAL_OPERATION_INTENTS_KEY = 'xya:product-external-operation-intents'
 const publishDraftIntents = reactive({})
 const priceIntents = reactive({})
+const editingPrice = reactive({
+  itemId: null,
+  inputValue: '',
+  originalPrice: '',
+  idempotencyKey: '',
+  loading: false,
+  error: '',
+})
 const offShelfIntents = reactive({})
 
 function createExternalOperationKey(prefix) {
@@ -373,6 +428,8 @@ const products = computed(() => items.value.map(w => {
     price: formatMoney(item.soldPrice ?? item.price),
     stock: item.stock ?? item.quantity ?? '-',
     sku: item.skuCount ?? '-',
+    isFishShop: item.isFishShop === true || Number(item.isFishShop) === 1 || accounts.value.find(a => a.id === Number(item.accountId ?? item.xianyuAccountId))?.fishShopUser === 1,
+    autoRelistOn: normalizeSwitchState(item.autoRelistEnabled),
     statusCode: Number.isFinite(statusCode) ? statusCode : null,
     status: isLocalDraft ? '草稿/待发布' : (Number.isFinite(statusCode) ? (statusMap[statusCode] || String(statusCode)) : '状态未知'),
     statusType: isLocalDraft ? 'orange' : (statusCode === 0 ? 'green' : statusCode === 3 ? 'red' : Number.isFinite(statusCode) ? 'orange' : 'gray'),
@@ -1106,6 +1163,146 @@ function normalizePriceInput(value) {
   if (!Number.isFinite(num) || num <= 0 || num > 9999999) return ''
   return raw
 }
+// 判断商品是否可行内改价：鱼小铺账号 + 非草稿 + 有闲鱼商品ID + 单价格商品（skuCount <= 1）
+function canEditPrice(row) {
+  if (!row) return false
+  const xyGoodsId = row.xyGoodId
+  if (!xyGoodsId || String(xyGoodsId).startsWith('local:')) return false
+  if (!row.isFishShop) return false
+  const skuCount = Number(row.raw?.skuCount ?? row.sku ?? 0)
+  if (skuCount > 1) return false
+  return true
+}
+function priceCellTitle(row) {
+  if (!row || !row.xyGoodId || String(row.xyGoodId).startsWith('local:')) return ''
+  if (!row.isFishShop) return '只有鱼小铺账号支持商品行内改价'
+  const skuCount = Number(row.raw?.skuCount ?? row.sku ?? 0)
+  if (skuCount > 1) return '多规格商品请在编辑页面修改各 SKU 价格'
+  return '点击修改价格'
+}
+function onPriceCellClick(row) {
+  if (!canEditPrice(row)) {
+    if (row && row.xyGoodId && !String(row.xyGoodId).startsWith('local:')) {
+      if (!row.isFishShop) {
+        showNotice('warn', '只有鱼小铺账号支持商品行内改价')
+      } else {
+        const skuCount = Number(row.raw?.skuCount ?? row.sku ?? 0)
+        if (skuCount > 1) showNotice('info', '多规格商品请在编辑页面修改各 SKU 价格')
+      }
+    }
+    return
+  }
+  startEditPrice(row)
+}
+function startEditPrice(row) {
+  if (editingPrice.loading) return  // 提交中不允许重新进入编辑
+  if (editingPrice.itemId && editingPrice.itemId === itemBusyKey(row)) return  // 已在编辑
+  const original = String(row.price || '').replace('¥', '').trim()
+  editingPrice.itemId = itemBusyKey(row)
+  editingPrice.inputValue = original
+  editingPrice.originalPrice = original
+  // 每次进入编辑会话生成新的幂等键（同一会话内重试复用该键，避免重复改价）
+  editingPrice.idempotencyKey = createExternalOperationKey('update-price')
+  editingPrice.loading = false
+  editingPrice.error = ''
+}
+function cancelEditPrice() {
+  if (editingPrice.loading) return  // 提交中不允许取消
+  editingPrice.itemId = null
+  editingPrice.inputValue = ''
+  editingPrice.originalPrice = ''
+  editingPrice.idempotencyKey = ''
+  editingPrice.loading = false
+  editingPrice.error = ''
+}
+// 输入框失焦时自动保存：检测到数据变化直接提交，无需确认/取消按钮
+function onPriceInputBlur(row) {
+  if (editingPrice.loading) return  // 提交中不允许重复提交
+  confirmEditPrice(row)
+}
+async function confirmEditPrice(row) {
+  if (editingPrice.loading) return  // 防止重复提交
+  const key = itemBusyKey(row)
+  if (editingPrice.itemId !== key) return  // 不是当前编辑行
+
+  const raw = String(editingPrice.inputValue || '').trim()
+  if (!raw) { editingPrice.error = '请输入价格'; return }
+  if (!/^\d+(\.\d{1,2})?$/.test(raw)) { editingPrice.error = '价格必须为数字，最多两位小数'; return }
+  const num = Number(raw)
+  if (!Number.isFinite(num) || num <= 0) { editingPrice.error = '价格必须大于 0'; return }
+  if (num > 9999999) { editingPrice.error = '价格超出允许范围'; return }
+  if (raw === editingPrice.originalPrice) { cancelEditPrice(); return }  // 价格未变化不调用接口
+
+  const accountId = row.xianyuAccountId || Number(query.xianyuAccountId)
+  if (!accountId) { editingPrice.error = '请先选择账号'; return }
+  const xyGoodsId = row.xyGoodId
+  if (!xyGoodsId || String(xyGoodsId).startsWith('local:')) { editingPrice.error = '本地草稿不能远程改价'; return }
+
+  editingPrice.loading = true
+  editingPrice.error = ''
+  try {
+    const res = await updateItemPrice({
+      xianyuAccountId: accountId,
+      xyGoodsId,
+      price: raw,
+      idempotencyKey: editingPrice.idempotencyKey,
+    })
+    const data = res?.data || {}
+    const newPrice = data.price || raw
+    showNotice('success', '商品改价成功')
+    if (row.raw) { row.raw.soldPrice = newPrice; row.raw.price = newPrice }
+    row.price = formatMoney(newPrice)
+    if (selected.value && itemBusyKey(selected.value) === key) {
+      selected.value = { ...selected.value, price: formatMoney(newPrice) }
+    }
+    cancelEditPrice()
+    await loadItems()
+  } catch (e) {
+    // 失败时保留编辑状态，便于用户修改后重试
+    const msg = e?.message || '改价失败，请稍后重试'
+    if (msg.includes('多规格') || msg.includes('SKU')) {
+      editingPrice.error = '多规格商品不支持行内改价，请进入商品编辑页面修改'
+    } else if (msg.includes('登录') || msg.includes('过期')) {
+      editingPrice.error = '账号登录已过期，请重新登录闲鱼账号'
+    } else if (msg.includes('风控') || msg.includes('验证')) {
+      editingPrice.error = '操作触发平台风控，请稍后重试'
+    } else if (msg.includes('未知') || msg.includes('result_unknown')) {
+      editingPrice.error = '改价结果未知，请先同步商品核对；为避免重复改价，当前禁止重试'
+      editingPrice.idempotencyKey = ''
+    } else {
+      editingPrice.error = msg
+    }
+    editingPrice.loading = false
+  }
+}
+
+// 售整自动上架开关
+async function toggleAutoRelist(row) {
+  if (isItemBusy(row)) return
+  if (row.autoRelistOn === null) {
+    showNotice('warn', '当前商品自动上架状态未知，请先同步商品数据')
+    return
+  }
+  const nextEnabled = !row.autoRelistOn
+  if (nextEnabled && Number(row.raw?.hasSnapshot) === 0) {
+    showNotice('warn', '当前商品缺少完整数据快照，请先点击"同步"获取商品完整数据后再开启售整自动上架')
+    return
+  }
+  const accountId = row.xianyuAccountId || Number(query.xianyuAccountId)
+  if (!accountId || !row.xyGoodId) {
+    showNotice('warn', '商品账号或闲鱼商品ID缺失，无法切换')
+    return
+  }
+  try {
+    await toggleAutoRelistApi({ xianyuAccountId: accountId, itemId: row.xyGoodId, enabled: nextEnabled })
+    row.autoRelistOn = nextEnabled
+    if (row.raw) row.raw.autoRelistEnabled = nextEnabled ? 1 : 0
+    showNotice('success', `已${nextEnabled ? '开启' : '关闭'}商品"${row.name}"的售整自动上架`)
+  } catch (e) {
+    showNotice('error', e.message || '切换售整自动上架失败')
+  }
+}
+
 async function editPrice(row) {
   if (!ensureListAvailable('修改商品价格')) return
   if (isOffShelfBlockingOtherWrites(row)) return showNotice('warn', '下架流程尚未安全收尾，已阻止并发改价；请先在闲鱼 App 核对。')
@@ -1667,6 +1864,56 @@ onBeforeUnmount(()=>{ syncPollCanceled = true; window.removeEventListener('xya-h
   font-size: 14px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+.cell-price-edit {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.price-edit-input-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.price-edit-prefix {
+  position: absolute;
+  left: 6px;
+  color: #999;
+  font-size: 12px;
+  pointer-events: none;
+}
+.price-edit-input {
+  width: 88px;
+  padding: 4px 6px 4px 18px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+}
+.price-edit-input:focus {
+  border-color: #4f6ef7;
+}
+.price-edit-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  color: #ef4444;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 5;
+}
+.cell-price-editable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  color: #4f6ef7;
+}
+.cell-price-editable:hover {
+  color: #2f4bd0;
+}
+.cell-price-locked {
+  cursor: not-allowed;
+  color: #999;
 }
 .cell-muted {
   color: #64748b;

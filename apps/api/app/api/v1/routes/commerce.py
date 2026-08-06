@@ -29,6 +29,7 @@ from ....models.entities import (
     RemoteGoodsDeleteAttempt,
     XianyuAccount,
     XianyuGoods,
+    XianyuGoodsSku,
     XianyuGoodsSyncTask,
     XianyuTradeOrder,
     XianyuTradeOrderItem,
@@ -177,12 +178,27 @@ def _goods_images(goods: XianyuGoods) -> list[str]:
     return images
 
 
+async def _load_goods_sku_counts(
+    db: AsyncSession, goods_ids: list[int]
+) -> dict[int, int]:
+    """统计每个商品在 xianyu_goods_sku 中的 SKU 数量（多规格改价引导依赖）。"""
+    if not goods_ids:
+        return {}
+    rows = await db.execute(
+        select(XianyuGoodsSku.goods_id, func.count(XianyuGoodsSku.id))
+        .where(XianyuGoodsSku.goods_id.in_(goods_ids))
+        .group_by(XianyuGoodsSku.goods_id)
+    )
+    return {int(goods_id): int(count) for goods_id, count in rows.all()}
+
+
 def _goods_to_record(
     goods: XianyuGoods,
     delivery_meta: Optional[dict[str, Any]] = None,
     remote_delete_meta: Optional[dict[str, Any]] = None,
     off_shelf_meta: Optional[dict[str, Any]] = None,
     auto_reply_scope_ctx: Optional[dict[str, Any]] = None,
+    sku_count: Optional[int] = None,
 ) -> dict[str, Any]:
     images = _goods_images(goods)
     cover = goods.cover_pic or goods.image_url or (images[0] if images else None)
@@ -216,12 +232,19 @@ def _goods_to_record(
         "detailInfo": goods.detail_info,
         "category": goods.category,
         "status": _db_goods_status_to_fe(goods.status),
-        "skuCount": 1,
+        "skuCount": sku_count if sku_count is not None else 1,
+        "sku_count": sku_count if sku_count is not None else 1,
         "exposureCount": goods.exposure_count or 0,
         "viewCount": goods.view_count or 0,
         "wantCount": goods.want_count or 0,
         "autoReplyEnabled": auto_reply_enabled,
         "auto_reply_enabled": auto_reply_enabled,
+        # 售整自动上架：开关/快照/原始库存由发布、编辑、重发链路维护
+        "autoRelistEnabled": goods.auto_relist_enabled or 0,
+        "auto_relist_enabled": goods.auto_relist_enabled or 0,
+        "hasSnapshot": goods.has_snapshot or 0,
+        "has_snapshot": goods.has_snapshot or 0,
+        "originalQuantity": goods.original_quantity,
         # xianyuAutoReplyOn 反映 effective 状态（含账号级继承与全局开关），
         # 与自动回复页保持一致；auto_reply_enabled 仍保留商品级原始值
         "xianyuAutoReplyOn": 1 if effective_auto_reply_on else 0,
@@ -621,6 +644,7 @@ async def list_goods(
     remote_delete_meta = await _load_goods_remote_delete_meta(db, goods_ids)
     off_shelf_meta = await _load_goods_off_shelf_meta(db, goods_ids)
     auto_reply_scope_ctx = await _load_auto_reply_scope_ctx(db)
+    sku_counts = await _load_goods_sku_counts(db, goods_ids)
     records = [
         _goods_to_record(
             goods,
@@ -628,6 +652,7 @@ async def list_goods(
             remote_delete_meta.get(int(goods.id)),
             off_shelf_meta.get(int(goods.id)),
             auto_reply_scope_ctx,
+            sku_counts.get(int(goods.id)),
         )
         for goods in goods_list
     ]
@@ -739,12 +764,15 @@ async def goods_detail(
     delivery_meta = await _load_goods_delivery_meta(db, [goods_id])
     remote_delete_meta = await _load_goods_remote_delete_meta(db, [goods_id])
     off_shelf_meta = await _load_goods_off_shelf_meta(db, [goods_id])
+    sku_counts = await _load_goods_sku_counts(db, [goods_id])
     return ResultObject.success(
         _goods_to_record(
             goods,
             delivery_meta.get(goods_id),
             remote_delete_meta.get(goods_id),
             off_shelf_meta.get(goods_id),
+            None,
+            sku_counts.get(goods_id),
         )
     )
 
@@ -808,12 +836,15 @@ async def update_goods(
     delivery_meta = await _load_goods_delivery_meta(db, [goods_id])
     remote_delete_meta = await _load_goods_remote_delete_meta(db, [goods_id])
     off_shelf_meta = await _load_goods_off_shelf_meta(db, [goods_id])
+    sku_counts = await _load_goods_sku_counts(db, [goods_id])
     return ResultObject.success(
         _goods_to_record(
             goods,
             delivery_meta.get(goods_id),
             remote_delete_meta.get(goods_id),
             off_shelf_meta.get(goods_id),
+            None,
+            sku_counts.get(goods_id),
         ),
         "商品更新成功",
     )
@@ -1059,6 +1090,8 @@ async def manual_delivery(
         delivery_content=body.delivery_content,
         quantity_requested=body.quantity_requested,
         idempotency_key=body.idempotency_key,
+        source_id=body.source_id,
+        delivery_timing=body.delivery_timing,
     )
     try:
         outcome = await coordinator.execute(order_id, command)

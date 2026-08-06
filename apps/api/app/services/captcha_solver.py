@@ -247,11 +247,42 @@ def _resolve_internal_api_token() -> str:
     return str(getattr(settings, "internal_api_token", "") or "").strip()
 
 
+# ============================================================
+# 浏览器启动/崩溃错误识别（对齐商业版 captcha_solver.py）
+# ============================================================
+# 这类错误表明 crawler-service 资源耗尽或 Chrome 进程异常，
+# 不是滑块求解本身的问题，应归类为 browser_crashed（跳过退避），
+# 避免 slider_fail 重试放大记录数。
+_BROWSER_LAUNCH_FAILURE_PATTERNS = (
+    "spawn /opt/google/chrome/chrome",    # Chrome 二进制 spawn 失败
+    "spawn EAGAIN",                       # 资源不足无法 spawn
+    "pthread_create",                     # 线程创建失败（资源耗尽）
+    "Failed to start BrowserThread",      # Chrome BrowserThread 启动失败
+    "Failed to start",                    # Chrome 启动失败通用错误
+    "Page crashed",                       # Chrome 页面崩溃
+    "browser_crashed",                    # Playwright browser_crashed 事件
+    "ERR_INSUFFICIENT_RESOURCES",         # Chrome 资源不足
+    "Navigation failed because",          # 导航失败（浏览器崩溃/资源不足）
+)
+
+
+def _is_browser_launch_failure(error_msg: str) -> bool:
+    """判断错误消息是否为浏览器启动失败/崩溃/资源耗尽类错误。
+
+    返回 True 表示这是浏览器层面错误（应跳过退避，快速重试），
+    False 表示可能是滑块求解本身失败（保持 slider_fail 60 秒冷却）。
+    """
+    if not error_msg:
+        return False
+    msg_lower = error_msg.lower() if isinstance(error_msg, str) else str(error_msg).lower()
+    return any(pattern.lower() in msg_lower for pattern in _BROWSER_LAUNCH_FAILURE_PATTERNS)
+
+
 async def try_auto_solve(
     account_id: int,
     target_url: Optional[str] = None,
     headless: bool = True,
-    max_retries: int = 2,
+    max_retries: int = 5,
     *,
     force: bool = False,
 ) -> dict:
@@ -382,6 +413,51 @@ async def try_auto_solve(
         ) as client:
             resp = await client.post(endpoint, json=payload, headers=headers)
             data = resp.json()
+    except httpx.TimeoutException as exc:
+        # HTTP 超时（ReadTimeout/ConnectTimeout/PoolTimeout）
+        # 2026-08-04 对齐商业版：超时是临时性错误，归为 timeout 且不累加退避，
+        # 避免 crawler-service 临时繁忙/浏览器操作耗时较长时账号被冷却 60s。
+        logger.error(
+            "调用 crawler-service 滑块求解超时 errorType=%s",
+            type(exc).__name__,
+        )
+        await record_solve_failure(
+            account_id,
+            error=f"滑块求解超时：{type(exc).__name__}",
+            skip_backoff=True,  # 超时是临时性错误，不累加退避
+            failure_reason="timeout",
+        )
+        return {
+            "success": False,
+            "solved": False,
+            "captchaDetected": False,
+            "attempts": 0,
+            "errorCode": "CAPTCHA_SOLVER_TIMEOUT",
+            "error": f"滑块求解超时（{type(exc).__name__}），请稍后重试",
+            "durationMs": int((time.time() - started) * 1000),
+        }
+    except (httpx.ConnectError, httpx.NetworkError) as exc:
+        # 网络连接错误（ConnectError/ReadError/WriteError 等）
+        # 2026-08-04 对齐商业版：网络错误也是临时性，不累加退避
+        logger.error(
+            "调用 crawler-service 滑块求解网络错误 errorType=%s",
+            type(exc).__name__,
+        )
+        await record_solve_failure(
+            account_id,
+            error=f"滑块求解网络错误：{type(exc).__name__}",
+            skip_backoff=True,  # 网络错误是临时性，不累加退避
+            failure_reason="service_unavailable",
+        )
+        return {
+            "success": False,
+            "solved": False,
+            "captchaDetected": False,
+            "attempts": 0,
+            "errorCode": "CAPTCHA_SOLVER_UNAVAILABLE",
+            "error": "滑块求解服务网络异常，请稍后重试",
+            "durationMs": int((time.time() - started) * 1000),
+        }
     except Exception as exc:
         logger.error(
             "调用 crawler-service 滑块求解失败 errorType=%s",
@@ -404,13 +480,32 @@ async def try_auto_solve(
     new_cookie_str = data.get("cookieStr") or ""
     merged_cookie = ""
 
-    # 退避状态：成功清零 / 失败累加（含 captchaDetected 但未通过）
+    # 退避状态：成功清零 / 失败按错误分类累加（含 captchaDetected 但未通过）
+    # 2026-08-04 对齐商业版错误分类：
+    # - browser_crashed：跳过退避（临时性错误，不累加 fail_count）
+    # - cookie_invalid：60 秒冷却（Cookie 已失效，等用户重新登录）
+    # - slider_fail：60 秒冷却（快速重试，服务于 WS 持久化目标）
     if data.get("ok") and data.get("solved"):
         await record_solve_success(account_id)
     else:
+        crawler_error = data.get("error") or "滑块验证未通过"
+        is_browser_crash = _is_browser_launch_failure(crawler_error)
+        is_cookie_invalid = (
+            "Cookie Session" in crawler_error
+            or "Cookie 已过期" in crawler_error
+            or "FAIL_SYS_SESSION_EXPIRED" in crawler_error
+        )
+        if is_browser_crash:
+            failure_reason_for_cooldown = "browser_crashed"
+        elif is_cookie_invalid:
+            failure_reason_for_cooldown = "cookie_invalid"
+        else:
+            failure_reason_for_cooldown = "slider_fail"
         await record_solve_failure(
             account_id,
-            error=data.get("error") or "滑块验证未通过",
+            error=crawler_error,
+            skip_backoff=is_browser_crash,  # cookie_invalid 不 skip_backoff，让 60 秒冷却生效
+            failure_reason=failure_reason_for_cooldown,
         )
 
     # 如果过滑块成功且获取了新 Cookie，增量合并到数据库

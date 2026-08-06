@@ -20,6 +20,10 @@ sh ./start.sh          # Linux / macOS
 - [Windows 部署](#windows-部署)
   - [方式一：一键脚本（推荐）](#方式一一键脚本推荐-1)
   - [方式二：手动分步](#方式二手动分步-1)
+- [本地裸机部署（无需 Docker）](#本地裸机部署无需-docker)
+  - [Linux / macOS](#linux--macos)
+  - [Windows](#windows)
+  - [本地部署常见问题](#本地部署常见问题)
 - [首次登录与配置](#首次登录与配置)
 - [运维命令](#运维命令)
 - [常见问题](#常见问题)
@@ -306,6 +310,91 @@ curl http://127.0.0.1:8080/readyz
 # 查看容器状态
 docker compose ps
 ```
+
+---
+
+## 本地裸机部署（无需 Docker）
+
+适合不想安装 Docker、或需要在开发机/低配机器直接运行的用户。脚本自动完成全部初始化，与 Docker 版 `start.sh` 同等的一键体验：**一条命令，从空环境到服务可用**。
+
+### Linux / macOS
+
+**前置要求**：Python 3.10+、Node.js 18+、npm；本机已运行 MySQL 8 与 Redis 7（Redis 无密码即可，有密码请编辑 `.env` 的 `REDIS_PASSWORD`）。
+
+```bash
+sh ./start-local.sh
+```
+
+首次运行自动完成以下全部工作（可重复运行，已完成的步骤自动跳过）：
+
+1. **预检环境**：检测 Python / Node / npm / mysql 客户端
+2. **生成 `.env` 与随机密钥**：从 `.env.development.example` 创建，自动生成 JWT / COOKIE / INTERNAL / MYSQL 随机密钥
+3. **创建 Python venv 并安装 API 依赖**（`.venv`，国内可设 `PIP_INDEX_URL` 加速）
+4. **生成 admin bcrypt hash**：默认密码 `admin123`，可用 `ADMIN_PASSWORD` 环境变量自定义
+5. **创建 MySQL 数据库与用户**：自动用 root 连接建库建用户（免密 → `MYSQL_ROOT_PASSWORD` 环境变量 → 交互输入三种方式自动尝试）
+6. **安装 Node 依赖**：crawler + web 的 `npm install`
+7. **安装 Playwright Chromium**：国内可设 `PLAYWRIGHT_DOWNLOAD_HOST` 镜像加速
+8. **数据库迁移**：`python -m app.migrations upgrade`
+9. **构建 Crawler 并后台启动 4 个服务**：API / Scheduler Worker / Crawler / Web
+10. **分阶段健康检查**：Crawler → API → Worker → Web，全部就绪后输出访问地址
+
+**访问服务**：浏览器打开 `http://localhost:15176`
+
+```
+默认账号：admin
+默认密码：admin123（首次启动时生成，请尽快修改）
+```
+
+**管理命令**：
+
+```bash
+sh ./status-local.sh     # 查看各服务状态与健康检查
+sh ./stop-local.sh       # 停止全部服务
+tail -f output/local-dev/api.out.log   # 查看 API 日志
+```
+
+**初始化参数**（作用于 `scripts/setup-local.sh`）：
+
+| 参数 | 作用 |
+|---|---|
+| `MYSQL_ROOT_PASSWORD="xxx" sh ./start-local.sh` | 指定 MySQL root 密码（root 有密码时） |
+| `ADMIN_PASSWORD="xxx" sh ./start-local.sh` | 自定义 admin 登录密码 |
+| `PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple" sh ./start-local.sh` | 国内 pip 镜像加速 |
+| `PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright" sh ./start-local.sh` | 国内 Playwright 镜像加速 |
+| `sh ./start-local.sh --force-init` | 强制重新运行初始化向导 |
+
+### Windows
+
+**前置要求**：Python 3.10+（安装时勾选 "Add python.exe to PATH"）、Node.js 22+；本机已运行 MySQL 8 与 Redis 7。
+
+```bat
+.\start-local.bat
+```
+
+首次运行自动调用 `scripts\setup-local.ps1` 完成全部初始化（生成 `.env` 与随机密钥、bcrypt hash、建库建用户、安装依赖），再启动 API / Worker / Crawler / Web 并等待就绪。
+
+**管理命令**：`status-local.bat`（状态）/ `stop-local.bat`（停止）。
+
+**初始化参数**（作用于 `scripts\setup-local.ps1`）：
+
+```powershell
+$env:MYSQL_ROOT_PASSWORD="你的MySQLroot密码"
+$env:ADMIN_PASSWORD="你的admin密码"
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-local.ps1
+```
+
+### 本地部署常见问题
+
+| 问题 | 解决方法 |
+|---|---|
+| Redis 未启动 | `start-local.sh` 会提示。请先启动 Redis（`redis-server`），本机无密码即可；有密码编辑 `.env` 的 `REDIS_PASSWORD` |
+| MySQL root 有密码 | 设置环境变量 `MYSQL_ROOT_PASSWORD="你的密码"` 后重跑 |
+| Playwright Chromium 下载失败 | 设置 `PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"` 后重跑 `scripts/setup-local.sh` |
+| pip 安装慢 | 设置 `PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"` 后重跑 |
+| 端口被占用 | 本地端口固定为 Web=15176 / API=15177 / Crawler=15178。如需修改，编辑 `.env` 的 `SERVER_PORT` / `CRAWLER_PORT` / `XYA_WEB_PORT`，并同步修改 `apps/web/vite.config.js` 的代理目标（建议保持默认） |
+| 忘记 admin 密码 | 删除 `.env` 中的 `ADMIN_PASSWORD_HASH` 行，然后运行 `ADMIN_PASSWORD="新密码" sh ./scripts/setup-local.sh` 重新生成 |
+
+> 本地模式仅供单机使用；公网多用户部署请使用 Docker 方式（`sh ./start.sh` / `.\start.bat`）。
 
 ---
 

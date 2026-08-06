@@ -99,11 +99,31 @@ class XianyuGoods(Base):
     sort_order = Column(Integer, default=0, comment="排序序号")
     status = Column(SmallInteger, default=1, comment="1在售 0下架 2已售")
     deleted = Column(SmallInteger, default=0)
-    auto_reply_enabled = Column(SmallInteger, nullable=True, default=None, comment="NULL继承账号全局 0强制关 1强制开")
-    created_time = Column(DateTime, default=func.now())
-    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
-
-
+    auto_reply_enabled = Column(SmallInteger, nullable=True, default=None, comment="NULL继承账号全局 0强制关 1强制开")
+    auto_relist_enabled = Column(SmallInteger, nullable=False, default=0, comment="售整自动上架开关：0关 1开")
+    has_snapshot = Column(SmallInteger, nullable=False, default=0, comment="是否有完整数据快照：0无 1有")
+    original_quantity = Column(Integer, nullable=True, comment="商品原始库存（售整场景=1）")
+    next_relist_goods_id = Column(BigInteger, nullable=True, comment="重发后的新商品记录ID（追溯重发链路）")
+    relist_source_goods_id = Column(BigInteger, nullable=True, comment="本商品由哪个原商品重发而来（防止无限链式重发）")
+    last_relist_at = Column(DateTime, nullable=True, comment="上次重发时间（限流与诊断）")
+    created_time = Column(DateTime, default=func.now())
+    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class XianyuGoodsEditSnapshot(Base):
+    """商品编辑/发布快照（编辑回显兜底 + 售整自动上架重发，单租户精简版）。"""
+    __tablename__ = "xianyu_goods_edit_snapshot"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False)
+    external_goods_id = Column(String(128), nullable=False, comment="闲鱼商品itemId")
+    snapshot_json = Column(JSON, nullable=False, comment="完整商品数据快照")
+    source = Column(String(32), nullable=False, default="publish", comment="快照来源：publish/edit/detail_api/relist")
+    account_type = Column(String(16), nullable=False, default="fish_shop", comment="账号类型：fish_shop / normal")
+    deleted = Column(SmallInteger, nullable=False, default=0)
+    created_time = Column(DateTime, default=func.now())
+    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
 class XianyuGoodsSyncTask(Base):
     """商品同步任务表（单租户精简版，无 tenant_id）。"""
     __tablename__ = "xianyu_goods_sync_task"
@@ -1250,3 +1270,222 @@ class XianyuRefundAccountState(Base):
     deleted = Column(SmallInteger, nullable=False, default=0)
     created_time = Column(DateTime, nullable=False, default=func.now())
     updated_time = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+# ============================================================
+# 账号会员等级（迁移 041，同步商业版 xianyu_account_membership）
+# ============================================================
+
+class XianyuAccountMembership(Base):
+    """闲鱼账号会员等级（一个账号一条会员记录）"""
+
+    __tablename__ = "xianyu_account_membership"
+    __table_args__ = (
+        UniqueConstraint("account_id", name="uk_account_membership"),
+        Index("idx_membership_level", "level"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号 ID")
+    level = Column(String(20), nullable=False, default="normal", comment="会员等级：normal/vip/svip")
+    expired_time = Column(DateTime, nullable=True, comment="过期时间（NULL 表示永久）")
+    status = Column(Integer, nullable=False, default=1, comment="1正常 0过期")
+    created_time = Column(DateTime, nullable=False, default=func.now())
+    updated_time = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+
+# ============================================================
+# 商品多规格 SKU（迁移 042，同步商业版多规格发货功能）
+# ============================================================
+
+class XianyuGoodsProperty(Base):
+    """商品规格类型（颜色/尺码等）"""
+
+    __tablename__ = "xianyu_goods_property"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号 ID")
+    goods_id = Column(BigInteger, nullable=False, comment="关联 xianyu_goods.id")
+    property_name = Column(String(100), nullable=False, comment="规格名称（颜色/尺码等）")
+    created_time = Column(DateTime, default=func.now())
+    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class XianyuGoodsPropertyValue(Base):
+    """商品规格值（红/蓝/S/M等）"""
+
+    __tablename__ = "xianyu_goods_property_value"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    property_id = Column(BigInteger, nullable=False, comment="关联 xianyu_goods_property.id")
+    value_name = Column(String(200), nullable=False, comment="规格值（红/蓝/S/M等）")
+    created_time = Column(DateTime, default=func.now())
+    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class XianyuGoodsSku(Base):
+    """商品 SKU 记录（每个商品的每个 SKU 一行）"""
+
+    __tablename__ = "xianyu_goods_sku"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号 ID")
+    goods_id = Column(BigInteger, nullable=False, comment="关联 xianyu_goods.id")
+    sku_id = Column(String(64), nullable=False, comment="闲鱼 SKU ID")
+    property_key = Column(String(500), nullable=False, comment="规范化键（排序后的属性键值对）")
+    property_list_json = Column(Text, nullable=True, comment="原始属性列表 JSON")
+    price = Column(DECIMAL(10, 2), nullable=True)
+    stock = Column(Integer, nullable=True)
+    created_time = Column(DateTime, default=func.now())
+    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+
+# ============================================================
+# 评价管理（迁移 044，同步商业版评价管理 + 自动评价功能）
+# ============================================================
+
+class XianyuRate(Base):
+    """闲鱼评价记录（订单维度：一个订单只允许一次卖家评价）"""
+
+    __tablename__ = "xianyu_rate"
+    __table_args__ = (
+        UniqueConstraint("account_id", "external_order_id", name="uk_rate_account_order"),
+        Index("idx_rate_account", "account_id", "deleted"),
+        Index("idx_rate_status", "deleted", "rate_reviewable"),
+        Index("idx_rate_time", "deleted", "finish_time"),
+        Index("idx_rate_sync_status", "account_id", "sync_status"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号ID")
+    external_order_id = Column(String(64), nullable=False, comment="订单ID（字符串存储）")
+    external_item_id = Column(String(64), nullable=True, comment="商品ID")
+    buyer_id = Column(String(120), nullable=True, comment="买家ID")
+    buyer_nick = Column(String(255), nullable=True, comment="买家昵称（脱敏）")
+    buyer_icon = Column(Text, nullable=True, comment="买家头像URL")
+    item_title = Column(String(500), nullable=True, comment="商品标题")
+    item_pic_url = Column(Text, nullable=True, comment="商品图片URL")
+    item_info_lines = Column(Text, nullable=True, comment="商品规格补充信息")
+    order_status = Column(String(64), nullable=True, comment="订单状态")
+    seller_rate_status = Column(String(16), nullable=True, comment="卖家评价状态码（原始字符串）")
+    in_refund = Column(String(16), nullable=True, comment="是否在退款中")
+    consign_time = Column(DateTime, nullable=True, comment="发货时间")
+    order_create_time = Column(DateTime, nullable=True, comment="订单创建时间")
+    pay_success_time = Column(DateTime, nullable=True, comment="支付成功时间")
+    finish_time = Column(DateTime, nullable=True, comment="交易完成时间")
+    logistics_company = Column(String(128), nullable=True, comment="物流公司")
+    logistics_mail_no = Column(String(128), nullable=True, comment="物流单号（脱敏）")
+    buyer_rate_content = Column(Text, nullable=True, comment="买家评价内容")
+    buyer_rate_level = Column(String(16), nullable=True, comment="买家评价等级")
+    buyer_rate_time = Column(DateTime, nullable=True, comment="买家评价时间")
+    buyer_rate_images = Column(Text, nullable=True, comment="买家评价图片列表 JSON")
+    seller_rate_content = Column(Text, nullable=True, comment="卖家评价内容")
+    seller_rate_level = Column(String(16), nullable=True, comment="卖家评价等级")
+    seller_rate_time = Column(DateTime, nullable=True, comment="卖家评价时间")
+    seller_rate_images = Column(Text, nullable=True, comment="卖家评价图片列表 JSON")
+    seller_rate_id = Column(String(64), nullable=True, comment="卖家评价ID")
+    has_seller_rate = Column(SmallInteger, nullable=False, default=0, comment="1=已评价 0=未评价")
+    rate_reviewable = Column(SmallInteger, nullable=False, default=0, comment="1=可评价 0=不可评价")
+    raw_json = Column(Text, nullable=True, comment="原始响应记录（脱敏）")
+    sync_status = Column(String(32), nullable=False, default="synced", comment="synced/pending_refresh")
+    last_synced_time = Column(DateTime, nullable=True)
+    deleted = Column(SmallInteger, nullable=False, default=0)
+    created_time = Column(DateTime, nullable=False, default=func.now())
+    updated_time = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class XianyuRateSyncTask(Base):
+    """评价同步任务追踪"""
+
+    __tablename__ = "xianyu_rate_sync_task"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    sync_id = Column(String(80), nullable=False, comment="同步任务ID（唯一）")
+    account_id = Column(BigInteger, nullable=True, comment="账号ID（NULL=全部账号）")
+    scope = Column(String(20), nullable=False, default="single", comment="single/all")
+    status = Column(String(30), nullable=False, default="queued", comment="queued/running/completed/failed")
+    progress = Column(Integer, nullable=False, default=0)
+    total_count = Column(Integer, nullable=False, default=0)
+    new_count = Column(Integer, nullable=False, default=0)
+    updated_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    succeeded_count = Column(Integer, nullable=False, default=0)
+    duration_seconds = Column(Float, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    started_time = Column(DateTime, nullable=True)
+    finished_time = Column(DateTime, nullable=True)
+    deleted = Column(SmallInteger, nullable=False, default=0)
+    created_time = Column(DateTime, nullable=False, default=func.now())
+    updated_time = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class XianyuRateAccountState(Base):
+    """账号级评价同步状态"""
+
+    __tablename__ = "xianyu_rate_account_state"
+    __table_args__ = (
+        UniqueConstraint("account_id", name="uk_rate_state_account"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, comment="闲鱼账号ID")
+    last_sync_time = Column(DateTime, nullable=True)
+    last_sync_status = Column(String(30), nullable=True, comment="success/failed/partial")
+    last_sync_error = Column(String(500), nullable=True)
+    last_total_count = Column(Integer, nullable=True)
+    is_syncing = Column(SmallInteger, nullable=False, default=0, comment="1=同步中")
+    sync_started_time = Column(DateTime, nullable=True)
+    last_full_sync_time = Column(DateTime, nullable=True)
+    deleted = Column(SmallInteger, nullable=False, default=0)
+    created_time = Column(DateTime, nullable=False, default=func.now())
+    updated_time = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class XianyuAccountAutoRateConfig(Base):
+    """账号自动评价配置"""
+
+    __tablename__ = "xianyu_account_auto_rate_config"
+    __table_args__ = (
+        UniqueConstraint("account_id", name="uk_xyaarc_account"),
+        Index("idx_xyaarc_enabled_hour", "enabled", "schedule_hour", "deleted"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, comment="闲鱼账号ID")
+    enabled = Column(SmallInteger, nullable=False, default=0, comment="是否启用自动评价")
+    rate_type = Column(String(20), nullable=False, default="text", comment="text=固定文本 api=API模式")
+    text_content = Column(Text, nullable=True, comment="固定评价内容")
+    api_url = Column(String(500), nullable=True, comment="外部API地址")
+    schedule_hour = Column(Integer, nullable=False, default=9, comment="每天执行时间（0-23）")
+    deleted = Column(SmallInteger, nullable=False, default=0)
+    created_time = Column(DateTime, nullable=False, default=func.now())
+    updated_time = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+
+class XianyuAutoRateLog(Base):
+    """自动补评价执行日志"""
+
+    __tablename__ = "xianyu_auto_rate_log"
+    __table_args__ = (
+        Index("idx_arl_account_time", "account_id", "run_time"),
+        Index("idx_arl_status", "status", "deleted"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    account_id = Column(BigInteger, nullable=False, comment="闲鱼账号ID")
+    run_time = Column(DateTime, nullable=False, comment="本次执行时间")
+    schedule_hour = Column(Integer, nullable=True, comment="配置的执行时间（手动触发为NULL）")
+    trigger_type = Column(String(20), nullable=False, default="scheduled", comment="scheduled=定时 manual=手动")
+    status = Column(String(20), nullable=False, default="success", comment="success/skip/failed/partial")
+    total_pending = Column(Integer, nullable=False, default=0)
+    total_success = Column(Integer, nullable=False, default=0)
+    total_failed = Column(Integer, nullable=False, default=0)
+    total_skipped = Column(Integer, nullable=False, default=0)
+    error_message = Column(String(500), nullable=True)
+    details_json = Column(Text, nullable=True, comment="每条订单处理结果明细")
+    duration_seconds = Column(Float, nullable=False, default=0)
+    deleted = Column(SmallInteger, nullable=False, default=0)
+    created_time = Column(DateTime, nullable=False, default=func.now())
+    updated_time = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())

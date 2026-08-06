@@ -6,8 +6,9 @@ import hashlib
 import logging
 import re
 import uuid
+import dataclasses
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -33,6 +34,8 @@ class ManualDeliveryCommand:
     delivery_content: str
     quantity_requested: int
     idempotency_key: str | None = None
+    source_id: int | None = None
+    delivery_timing: str | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +149,8 @@ class ManualDeliveryError(Exception):
 
 
 class AttemptStore(Protocol):
+    async def resolve_source(self, source_id: int) -> dict[str, Any] | None: ...
+
     async def acquire(
         self,
         order_id: int,
@@ -209,6 +214,8 @@ class ManualDeliveryCoordinator:
         order_id: int,
         command: ManualDeliveryCommand,
     ) -> ManualDeliveryOutcome:
+        if command.source_id:
+            command = await self._resolve_source_command(command)
         content_digest = hashlib.sha256(command.delivery_content.encode("utf-8")).hexdigest()
         idempotency_key = command.idempotency_key or hashlib.sha256(
             f"manual-delivery:v1:{order_id}:{command.delivery_mode}:{command.quantity_requested}:{content_digest}".encode()
@@ -274,6 +281,34 @@ class ManualDeliveryCoordinator:
             lease = await self._store.mark_success(lease, command)
 
         return self._outcome(lease)
+
+    async def _resolve_source_command(
+        self,
+        command: ManualDeliveryCommand,
+    ) -> ManualDeliveryCommand:
+        """货源库发货：从 delivery_text_source 表读取内容，返回解析后的 command。"""
+        source = await self._store.resolve_source(command.source_id)
+        if not source:
+            raise ManualDeliveryError(
+                422,
+                "source_not_found",
+                "所选货源不存在或已被删除",
+                data={"retrySafe": False},
+            )
+        content = str(source.get("content") or "").strip()
+        if not content:
+            raise ManualDeliveryError(
+                422,
+                "source_empty",
+                "货源内容为空，请先在货源库中补充内容",
+                data={"retrySafe": False},
+            )
+        mode = "card" if str(source.get("delivery_mode") or "").lower() == "card" else "text"
+        return dataclasses.replace(
+            command,
+            delivery_content=content,
+            delivery_mode=mode,
+        )
 
     @staticmethod
     def _outcome(
@@ -341,6 +376,23 @@ class SqlManualDeliveryAttemptStore:
     def __init__(self, db: AsyncSession, *, lease_seconds: int = 90) -> None:
         self._db = db
         self._lease_seconds = max(30, min(int(lease_seconds), 300))
+
+    async def resolve_source(self, source_id: int) -> dict[str, Any] | None:
+        """从 delivery_text_source 表读取货源内容（id/title/content/delivery_mode）。"""
+        row = (
+            await self._db.execute(
+                text(
+                    """
+                    SELECT id, title, content, delivery_mode
+                    FROM delivery_text_source
+                    WHERE id = :sid AND deleted = 0
+                    LIMIT 1
+                    """
+                ),
+                {"sid": int(source_id)},
+            )
+        ).mappings().first()
+        return dict(row) if row else None
 
     async def acquire(
         self,
@@ -420,7 +472,7 @@ class SqlManualDeliveryAttemptStore:
             delivery_mode=command.delivery_mode,
             content=command.delivery_content,
             delivery_content=command.delivery_content,
-            delivery_timing="manual_immediate",
+            delivery_timing=command.delivery_timing or "manual_immediate",
             status=0,
             delivery_status="pending",
             retry_count=0,

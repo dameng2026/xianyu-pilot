@@ -1,5 +1,6 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from ....core.database import get_db
@@ -13,6 +14,7 @@ from ....models.entities import (
     XianyuAccount,
     XianyuAccountAuth,
     XianyuAccountRuntime,
+    XianyuAccountMembership,
 )
 from ....schemas.account import (
     AccountReqDTO, ManualAddAccountReqDTO, UpdateAccountReqDTO,
@@ -27,8 +29,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/account")
 
 
-def account_to_dto(account: XianyuAccount) -> AccountProfileDTO:
-    """将新实体 XianyuAccount 转换为 AccountProfileDTO"""
+def account_to_dto(account: XianyuAccount, membership=None) -> AccountProfileDTO:
+    """将新实体 XianyuAccount 转换为 AccountProfileDTO
+
+    membership: 可选的 XianyuAccountMembership 实体，用于填充会员等级字段。
+    """
     ip_location = None
     if account.province or account.city:
         ip_location = f"{account.province or ''} {account.city or ''}".strip()
@@ -61,6 +66,10 @@ def account_to_dto(account: XianyuAccount) -> AccountProfileDTO:
         avatar=account.avatar_url,
         proxy_password="***",
     )
+    if membership is not None:
+        dto.membership_level = membership.level
+        dto.membership_expired_time = str(membership.expired_time) if membership.expired_time else None
+        dto.membership_status = membership.status
     return dto
 
 
@@ -70,10 +79,13 @@ async def get_account_list(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        query = select(XianyuAccount)
+        query = select(XianyuAccount, XianyuAccountMembership).outerjoin(
+            XianyuAccountMembership,
+            XianyuAccountMembership.account_id == XianyuAccount.id,
+        )
         result = await db.execute(query)
-        accounts = result.scalars().all()
-        account_list = [account_to_dto(a) for a in accounts]
+        rows = result.all()
+        account_list = [account_to_dto(a, m) for a, m in rows]
         return ResultObject.success(GetAccountListRespDTO(accounts=account_list))
     except Exception as e:
         logger.error("获取账号列表失败", exc_info=True)
@@ -256,14 +268,18 @@ async def get_account_detail(
 ):
     try:
         result = await db.execute(
-            select(XianyuAccount).where(
-                XianyuAccount.id == req.account_id,
+            select(XianyuAccount, XianyuAccountMembership)
+            .outerjoin(
+                XianyuAccountMembership,
+                XianyuAccountMembership.account_id == XianyuAccount.id,
             )
+            .where(XianyuAccount.id == req.account_id)
         )
-        account = result.scalar_one_or_none()
-        if not account:
+        row = result.first()
+        if not row:
             return ResultObject.failed("账号不存在")
-        return ResultObject.success(GetAccountDetailRespDTO(account=account_to_dto(account)))
+        account, membership = row
+        return ResultObject.success(GetAccountDetailRespDTO(account=account_to_dto(account, membership)))
     except Exception as e:
         logger.error("获取账号详情失败", exc_info=True)
         return ResultObject.internal_error()
@@ -470,4 +486,77 @@ async def stop_refresh_scheduler(current_user: dict = Depends(get_current_user))
         return ResultObject.success({"message": "刷新调度器已停止"})
     except Exception as exc:
         logger.error("停止刷新调度器失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()
+
+
+# ============================================================
+# 账号会员等级（同步商业版 xianyu_account_membership）
+# ============================================================
+@router.put("/{account_id}/membership", response_model=ResultObject[dict])
+async def set_account_membership(
+    account_id: int,
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """设置账号会员等级（upsert：存在则更新，不存在则插入）。
+
+    请求体: {"level": "normal|vip|svip", "expiredTime": "2026-12-31 23:59:59" | null}
+    """
+    try:
+        level = (body.get("level") or "normal").strip().lower()
+        if level not in ("normal", "vip", "svip"):
+            return ResultObject.validate_failed("level 必须为 normal/vip/svip")
+
+        expired_time_str = body.get("expiredTime")
+        expired_time = None
+        if expired_time_str:
+            raw = str(expired_time_str).strip()
+            try:
+                expired_time = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                try:
+                    expired_time = datetime.fromisoformat(raw)
+                except ValueError:
+                    return ResultObject.validate_failed("expiredTime 格式应为 YYYY-MM-DD HH:MM:SS")
+
+        # 检查账号是否存在
+        acct_result = await db.execute(
+            select(XianyuAccount).where(XianyuAccount.id == account_id)
+        )
+        if not acct_result.scalar_one_or_none():
+            return ResultObject.failed("账号不存在")
+
+        # upsert 会员记录
+        result = await db.execute(
+            select(XianyuAccountMembership).where(
+                XianyuAccountMembership.account_id == account_id
+            )
+        )
+        membership = result.scalar_one_or_none()
+        if membership:
+            membership.level = level
+            membership.expired_time = expired_time
+            membership.status = 1
+        else:
+            membership = XianyuAccountMembership(
+                account_id=account_id,
+                level=level,
+                expired_time=expired_time,
+                status=1,
+            )
+            db.add(membership)
+
+        await db.commit()
+        await db.refresh(membership)
+
+        return ResultObject.success({
+            "accountId": account_id,
+            "level": membership.level,
+            "expiredTime": str(membership.expired_time) if membership.expired_time else None,
+            "status": membership.status,
+            "message": "会员等级设置成功",
+        })
+    except Exception as e:
+        logger.error("设置账号会员等级失败", exc_info=True)
         return ResultObject.internal_error()

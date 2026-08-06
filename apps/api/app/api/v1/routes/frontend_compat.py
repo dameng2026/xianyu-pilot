@@ -2949,13 +2949,51 @@ async def compat_xianyu_accounts_auto_rate_config(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """读取账号自动评价配置"""
-    config = await _load_account_config(db, account_id, "auto_rate_config")
+    """读取账号自动评价配置（xianyu_account_auto_rate_config 表，兼容旧 JSON 配置）"""
+    from sqlalchemy import select as _select
+    from ....models.entities import XianyuAccountAutoRateConfig
+
+    result = await db.execute(
+        _select(XianyuAccountAutoRateConfig).where(
+            XianyuAccountAutoRateConfig.account_id == account_id,
+            XianyuAccountAutoRateConfig.deleted == 0,
+        )
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        # 兼容旧版本：迁移 xianyu_sys_setting 中的 JSON 配置
+        legacy = await _load_account_config(db, account_id, "auto_rate_config")
+        if legacy.get("enabled") or legacy.get("textContent"):
+            new_cfg = XianyuAccountAutoRateConfig(
+                account_id=account_id,
+                enabled=1 if legacy.get("enabled") else 0,
+                rate_type=legacy.get("rateType", "text") if legacy.get("rateType") in ("text", "api") else "text",
+                text_content=legacy.get("textContent", "") or "",
+                api_url=legacy.get("apiUrl", "") or "",
+                schedule_hour=9,
+            )
+            db.add(new_cfg)
+            await db.commit()
+            return ResultObject.success({
+                "enabled": bool(new_cfg.enabled),
+                "rateType": new_cfg.rate_type,
+                "textContent": new_cfg.text_content or "",
+                "apiUrl": new_cfg.api_url or "",
+                "scheduleHour": new_cfg.schedule_hour,
+            })
+        return ResultObject.success({
+            "enabled": False,
+            "rateType": "text",
+            "textContent": "",
+            "apiUrl": "",
+            "scheduleHour": 9,
+        })
     return ResultObject.success({
-        "enabled": config.get("enabled", False),
-        "rateType": config.get("rateType", "text"),
-        "textContent": config.get("textContent", ""),
-        "apiUrl": config.get("apiUrl", ""),
+        "enabled": bool(config.enabled),
+        "rateType": config.rate_type or "text",
+        "textContent": config.text_content or "",
+        "apiUrl": config.api_url or "",
+        "scheduleHour": config.schedule_hour if config.schedule_hour is not None else 9,
     })
 
 
@@ -2966,24 +3004,53 @@ async def compat_xianyu_accounts_save_auto_rate_config(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """保存账号自动评价配置"""
+    """保存账号自动评价配置（xianyu_account_auto_rate_config 表，upsert）"""
+    from sqlalchemy import select as _select
+    from ....models.entities import XianyuAccountAutoRateConfig
+
     enabled = bool(payload.get("enabled", False))
     rate_type = payload.get("rateType", "text")
     if rate_type not in ("text", "api"):
         rate_type = "text"
     text_content = str(payload.get("textContent", "") or "")
     api_url = str(payload.get("apiUrl", "") or "")
-    await _save_account_config(db, account_id, "auto_rate_config", {
-        "enabled": enabled,
-        "rateType": rate_type,
-        "textContent": text_content,
-        "apiUrl": api_url,
-    })
+    schedule_hour = payload.get("scheduleHour", 9)
+    try:
+        schedule_hour = int(schedule_hour)
+    except (TypeError, ValueError):
+        schedule_hour = 9
+    if schedule_hour < 0 or schedule_hour > 23:
+        schedule_hour = 9
+
+    result = await db.execute(
+        _select(XianyuAccountAutoRateConfig).where(
+            XianyuAccountAutoRateConfig.account_id == account_id,
+        )
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        db.add(XianyuAccountAutoRateConfig(
+            account_id=account_id,
+            enabled=1 if enabled else 0,
+            rate_type=rate_type,
+            text_content=text_content,
+            api_url=api_url,
+            schedule_hour=schedule_hour,
+        ))
+    else:
+        config.enabled = 1 if enabled else 0
+        config.rate_type = rate_type
+        config.text_content = text_content
+        config.api_url = api_url
+        config.schedule_hour = schedule_hour
+        config.deleted = 0
+    await db.commit()
     return ResultObject.success({
         "enabled": enabled,
         "rateType": rate_type,
         "textContent": text_content,
         "apiUrl": api_url,
+        "scheduleHour": schedule_hour,
     })
 
 

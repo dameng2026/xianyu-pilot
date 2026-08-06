@@ -15,6 +15,9 @@
  * 8. 检测验证结果：成功（弹窗消失 / 出现成功标识）/ 失败（出现错误提示）
  *
  * 注：开源版不含 policy.js / 账号代理 / Python 脚本调用路径，已移除相关依赖。
+ * 强化（与商业版对齐）：三种轨迹方案轮换（humanLikeDrag / humanLikeDragOutOfContainer / humanPhysicsDrag）、
+ *   punish 状态检测、假成功防护、风险 cookies 清除、5 次重试、1 次真人行动模拟（2026-08-04 对齐商业版）。
+ *   默认轨迹方案基于最小急动度剖面（Hogan 1984），与商业版 sliderSolve.py 的 human_physics_drag 一致。
  */
 import { chromium, type Browser, type Page, type BrowserContextOptions, type Cookie } from 'playwright';
 import fs from 'node:fs/promises';
@@ -57,6 +60,44 @@ const BAXIA_SELECTORS = [
 ];
 
 // ============================================================
+// 风险 Cookies 清单（同步自商业版 sliderSolver.ts）
+// ============================================================
+// Baxia 在访问过程中通过 Set-Cookie 重新设置的 risk cookies，
+// 刷新重试前必须清除，否则会形成"刷新→带 risk cookies→再次 punish→刷新"死循环。
+const RISK_COOKIE_NAMES = [
+  'x5secdata', 'x5sec', 'x5sectag', 'x5pref',
+  'bx-cookie-test', 'tfstk', 'cbc', 'sca', 'isg',
+];
+
+// ============================================================
+// Punish 状态检测（同步自商业版 sliderSolver.ts）
+// ============================================================
+// 关键纠正：mtop.taobao.idlemessage.pc.login.token 是 WS token 刷新 API 的名字，
+// 不是 Cookie 失效信号！Baxia 挑战该 API 时 iframe URL 会含 login.token，但 Cookie 仍可能有效。
+// 所有 punish URL（含 "_____tmd_____" 或 "punish"）统一视为 account_punished（可拖动）。
+async function checkPunishedFrame(frame: any): Promise<boolean> {
+  try {
+    const url = frame?.url ? frame.url() : '';
+    if (!url) return false;
+    if (url.includes('_____tmd_____') || url.includes('punish')) {
+      return true;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+// 假成功检测：页面加载失败（chrome-error:// 或 chromewebdata）时不应判定为通过
+function pageShowsLoadFailure(page: Page): boolean {
+  try {
+    const url = page.url();
+    if (url.includes('chrome-error://') || url.includes('chromewebdata')) {
+      return true;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+// ============================================================
 // 内联工具函数（替代商业版 policy.js 的依赖）
 // ============================================================
 
@@ -96,20 +137,99 @@ function resolveHeadlessMode(headless?: boolean): boolean {
 // ============================================================
 // 5% 成功率的根因：navigator.webdriver 裸奔、plugins 伪造为数字数组、
 // WebGL vendor 返回 SwiftShader、Canvas 指纹固定，Baxia 可直接识别为自动化。
-// 本脚本覆盖：webdriver / chrome / plugins / languages / permissions /
-// WebGL vendor&renderer / hardwareConcurrency / deviceMemory / Canvas 微扰动
+// 本脚本覆盖：webdriver / platform / vendor / appVersion / userAgentData /
+// chrome / plugins / languages / permissions / WebGL vendor&renderer /
+// hardwareConcurrency / deviceMemory / Canvas 微扰动
 const ANTI_DETECT_SCRIPT = `
 (() => {
   try {
-    // 1. 屏蔽 navigator.webdriver（删除原型属性，降低 'webdriver' in navigator 命中率）
+    // 1. 屏蔽 navigator.webdriver（与商业版对齐：getter 返回 false，并删除原型链属性）
+    // 关键修复 2026-08-03：get: () => undefined 仍可被 'webdriver' in navigator 检测到
+    // （属性存在但值为 undefined）；正常 Chrome（非自动化）navigator.webdriver 返回 false。
     try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
-    Object.defineProperty(navigator, 'webdriver', {
-      get: () => undefined,
-      configurable: true,
-    });
     try {
       Object.defineProperty(Navigator.prototype, 'webdriver', {
-        get: () => undefined,
+        get: () => false,
+        configurable: true,
+      });
+    } catch (e) {}
+    try {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+        configurable: true,
+      });
+    } catch (e) {}
+
+    // 1.1 伪装 navigator.platform（Navigator.prototype + 实例双层，与商业版对齐）
+    // 关键修复 2026-08-03：Linux 服务器上 navigator.platform='Linux x86_64'，
+    //   但 UA 伪装为 Windows，FireyeJS 会检测到 platform 与 UA 不一致直接拒绝加载。
+    //   navigator.platform 是 Navigator.prototype 上的 getter，仅在实例上
+    //   defineProperty 可能被原型链覆盖，必须双层伪装为 'Win32'。
+    try {
+      Object.defineProperty(Navigator.prototype, 'platform', {
+        get: () => 'Win32',
+        configurable: true,
+      });
+    } catch (e) {}
+    try {
+      Object.defineProperty(navigator, 'platform', {
+        get: () => 'Win32',
+        configurable: true,
+      });
+    } catch (e) {}
+    // 1.2 伪装 navigator.vendor（Chrome 为 'Google Inc.'）
+    try {
+      Object.defineProperty(navigator, 'vendor', {
+        get: () => 'Google Inc.',
+        configurable: true,
+      });
+    } catch (e) {}
+    // 1.3 伪装 navigator.appVersion 与 UA 一致
+    try {
+      const ua = navigator.userAgent;
+      const appVer = ua.replace(/^Mozilla\\//, '');
+      Object.defineProperty(navigator, 'appVersion', {
+        get: () => appVer,
+        configurable: true,
+      });
+    } catch (e) {}
+
+    // 1.4 覆盖 navigator.userAgentData（Chrome 90+ Client Hints，与商业版对齐）
+    // 关键修复 2026-08-03：FireyeJS 通过 navigator.userAgentData.platform 检测真实操作系统，
+    // 即使 navigator.platform 被覆盖为 Win32，userAgentData.platform 仍返回 'Linux'，
+    // 导致 UA 与 platform 不一致，um.json 服务器拒绝设备指纹（返回 {"id":""}）。
+    // 修复：覆盖 userAgentData 为完整的 Windows 指纹。
+    try {
+      const chromeVer = (navigator.userAgent.match(/Chrome\\/([\\d]+)/) || [, '146'])[1];
+      const majorVer = chromeVer.split('.')[0];
+      const fakeUAD = {
+        brands: [
+          { brand: 'Google Chrome', version: majorVer },
+          { brand: 'Chromium', version: majorVer },
+          { brand: 'Not.A/Brand', version: '8' },
+        ],
+        mobile: false,
+        platform: 'Windows',
+        getHighEntropyValues: function(hints) {
+          return Promise.resolve({
+            architecture: 'x86',
+            bitness: '64',
+            brands: fakeUAD.brands,
+            fullVersionList: fakeUAD.brands,
+            mobile: false,
+            model: '',
+            platform: 'Windows',
+            platformVersion: '15.0.0',
+            uaFullVersion: chromeVer,
+            wow64: false,
+          });
+        },
+        toJSON: function() {
+          return { brands: fakeUAD.brands, mobile: false, platform: 'Windows' };
+        },
+      };
+      Object.defineProperty(navigator, 'userAgentData', {
+        get: () => fakeUAD,
         configurable: true,
       });
     } catch (e) {}
@@ -221,6 +341,29 @@ const ANTI_DETECT_SCRIPT = `
       get: () => 8,
       configurable: true,
     });
+
+    // 8. Canvas 指纹微扰动（与商业版对齐）：在 toDataURL 返回值中注入微小噪声
+    // 真人 Canvas 指纹因显卡/驱动差异天然不同，自动化环境 Canvas 指纹固定且可被 fingerprintjs 库识别
+    const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function(...args) {
+      const ctx = this.getContext('2d');
+      if (ctx) {
+        try {
+          const w = this.width, h = this.height;
+          if (w > 0 && h > 0) {
+            const img = ctx.getImageData(0, 0, w, h);
+            // 在 R 通道注入 ±1 的微小噪声（视觉不可见，但改变指纹哈希）
+            for (let i = 0; i < img.data.length; i += 4) {
+              if (Math.random() < 0.03) {  // 3% 像素扰动
+                img.data[i] = (img.data[i] + (Math.random() < 0.5 ? -1 : 1)) & 0xff;
+              }
+            }
+            ctx.putImageData(img, 0, 0);
+          }
+        } catch (e) {}
+      }
+      return origToDataURL.apply(this, args);
+    };
 
     // 9. 隐藏 Playwright/CDP 注入痕迹
     // 移除 window.cdc_ 开头的属性（Chrome DevTools Controller 注入的标记）
@@ -564,6 +707,89 @@ async function getSliderInfo(frame: any): Promise<{ button: any; trackWidth: num
 }
 
 /**
+ * CDP 鼠标封装：手动设置 deltaX/deltaY，修复 movementX/movementY 恒为 0 的问题（C2.4）
+ *
+ * 关键修复 2026-08-01：Playwright 的 page.mouse.move() 通过 CDP Input.dispatchMouseEvent
+ * 发送事件时不携带 deltaX/deltaY 参数，导致 event.movementX/movementY 始终为 0。
+ * 真实鼠标拖动时 movementX/movementY 反映移动增量，Baxia FireyeJS 检测到
+ * movementX=0 的拖动事件会直接判定为机器人（真实鼠标拖动时 movementX 不可能全为 0）。
+ * 修复方案：用 CDP 直接发送 Input.dispatchMouseEvent，手动设置 deltaX/deltaY。
+ */
+class CdpMouse {
+  private readonly client: any;
+  private x: number;
+  private y: number;
+  private pressed = false;
+
+  constructor(client: any, startX: number, startY: number) {
+    this.client = client;
+    this.x = startX;
+    this.y = startY;
+  }
+
+  private async dispatch(type: string, x: number, y: number, buttons: number, extra: Record<string, unknown> = {}): Promise<void> {
+    const dx = Math.round((x - this.x) * 100) / 100;
+    const dy = Math.round((y - this.y) * 100) / 100;
+    this.x = x;
+    this.y = y;
+    await this.client.send('Input.dispatchMouseEvent', {
+      type,
+      x,
+      y,
+      deltaX: dx,
+      deltaY: dy,
+      button: 'left',
+      buttons,
+      modifiers: 0,
+      timestamp: 0,
+      ...extra,
+    });
+  }
+
+  /** 移动（steps>1 时线性插值，逐点附带正确 deltaX/deltaY） */
+  async move(x: number, y: number, steps = 1): Promise<void> {
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      await this.dispatch('mouseMoved', this.x + (x - this.x) * t, this.y + (y - this.y) * t, this.pressed ? 1 : 0);
+    }
+  }
+
+  async down(x: number, y: number): Promise<void> {
+    await this.dispatch('mousePressed', x, y, 1, { clickCount: 1 });
+    this.pressed = true;
+  }
+
+  async up(x: number, y: number): Promise<void> {
+    await this.dispatch('mouseReleased', x, y, 0, { clickCount: 1 });
+    this.pressed = false;
+  }
+}
+
+/** 创建拖动鼠标控制：优先 CDP（带 deltaX/deltaY），CDP 不可用时回退 page.mouse */
+async function createDragMouse(page: Page, startX: number, startY: number): Promise<{
+  move(x: number, y: number, steps?: number): Promise<void>;
+  down(x: number, y: number): Promise<void>;
+  up(x: number, y: number): Promise<void>;
+}> {
+  try {
+    const client = await page.context().newCDPSession(page);
+    const cdp = new CdpMouse(client, startX, startY);
+    return {
+      move: (x, y, steps = 1) => cdp.move(x, y, steps),
+      down: (x, y) => cdp.down(x, y),
+      up: (x, y) => cdp.up(x, y),
+    };
+  } catch {
+    // CDP 会话创建失败（极端情况），回退 page.mouse（无 delta，但保证流程可用）
+    return {
+      move: (x, y, steps = 1) => page.mouse.move(x, y, { steps }),
+      down: () => page.mouse.down(),
+      up: () => page.mouse.up(),
+    };
+  }
+}
+
+/**
  * 模拟人工拖动滑块（增强版：对抗 Baxia 风控检测）
  *
  * 风控判定机器人/程序的常见维度：
@@ -596,6 +822,8 @@ async function humanLikeDrag(
   }
 
   // 根据 attempt 选择不同的速度策略（每次重试速度不同）
+  // 2026-08-04 对齐商业版 5 档参数：总时长落在 2-3.5s 区间，
+  // 原实现 30-40 步/20-50ms ≈ 0.8-1.8s 明显偏快（Baxia 通过拖动速度识别机器人）
   let stepsBase: number;
   let stepDelayMin: number;
   let stepDelayMax: number;
@@ -606,34 +834,36 @@ async function humanLikeDrag(
 
   switch (attempt) {
     case 1:
-      // 标准速度：30-40步，20-50ms间隔，总时长约 0.8-1.8秒
-      stepsBase = 30;
-      stepDelayMin = 20;
-      stepDelayMax = 50;
-      break;
-    case 2:
-      // 中速：35-45步，30-70ms间隔，无停顿，总时长约 1.2-2.5秒
-      stepsBase = 35;
+      // 标准速度（真人模拟）：50-65步，30-70ms间隔 + 1个中间停顿，总时长约 2-3.5秒
+      stepsBase = 50;
       stepDelayMin = 30;
       stepDelayMax = 70;
+      pausePoints = [pausePoint];
+      break;
+    case 2:
+      // 中慢速：55-70步，40-80ms间隔 + 1个中间停顿，总时长约 2.5-4.5秒
+      stepsBase = 55;
+      stepDelayMin = 40;
+      stepDelayMax = 80;
+      pausePoints = [pausePoint];
       break;
     case 3:
-      // 较快：25-35步，15-40ms间隔，无停顿，总时长约 0.5-1.2秒
-      stepsBase = 25;
-      stepDelayMin = 15;
-      stepDelayMax = 40;
+      // 标准速度：45-60步，25-60ms间隔，无停顿，总时长约 1.5-3秒
+      stepsBase = 45;
+      stepDelayMin = 25;
+      stepDelayMax = 60;
       break;
     case 4:
-      // 慢速：40-50步，40-90ms间隔 + 中间停顿0.3秒，总时长约 2-4秒
-      stepsBase = 40;
-      stepDelayMin = 40;
-      stepDelayMax = 90;
-      pausePoints = [pausePoint];
+      // 慢速：60-75步，50-100ms间隔 + 2个中间停顿，总时长约 4-6秒
+      stepsBase = 60;
+      stepDelayMin = 50;
+      stepDelayMax = 100;
+      pausePoints = [pausePoint, 0.6 + Math.random() * 0.2];
       break;
     default:
       // attempt >= 5: 随机策略组合（不设停顿，避免太慢）
-      stepsBase = 30 + Math.floor(Math.random() * 15);
-      stepDelayMin = 20 + Math.floor(Math.random() * 30);
+      stepsBase = 40 + Math.floor(Math.random() * 20);
+      stepDelayMin = 30 + Math.floor(Math.random() * 30);
       stepDelayMax = stepDelayMin + 30 + Math.floor(Math.random() * 40);
       pausePoints = [];
       break;
@@ -670,11 +900,13 @@ async function humanLikeDrag(
   await page.waitForTimeout(100 + Math.random() * 150);
 
   // 2. 鼠标按下（真实 mousedown 事件）
-  await page.mouse.down();
+  // 使用 CDP 鼠标控制（带 deltaX/deltaY），修复 movementX/movementY=0 的机器人特征
+  const mouse = await createDragMouse(page, actualStartX, actualStartY);
+  await mouse.down(actualStartX, actualStartY);
   // 按下后短暂停顿（80-180ms，模拟按下后开始滑动）
   await page.waitForTimeout(80 + Math.random() * 100);
   // 按下后微小漂移（真人按下到开始拖动之间鼠标常有 1-2px 漂移，非完美静止）
-  await page.mouse.move(actualStartX + (Math.random() - 0.5) * 3, actualStartY + (Math.random() - 0.5) * 3, { steps: 3 });
+  await mouse.move(actualStartX + (Math.random() - 0.5) * 3, actualStartY + (Math.random() - 0.5) * 3, 3);
   await page.waitForTimeout(30 + Math.random() * 50);
 
   // 3. 分多步拖动，使用不对称三阶段速度曲线（真人加速段短、匀速段长、减速段居中）
@@ -717,10 +949,10 @@ async function humanLikeDrag(
     currentY = currentY * 0.6 + targetY * 0.4;
     lastY = currentY;
 
-    // 使用 page.mouse.move 生成真实 mousemove 事件
+    // 使用 CDP 鼠标移动生成真实 mousemove 事件（带 deltaX/deltaY）
     // steps: 3 让每步移动有 3 个 mousemove 事件，肉眼可见鼠标在"滑"而非瞬移
     // 同时保持每个 mousemove 事件之间的距离合理（约 3-5px），符合 Baxia 对轨迹密度的要求
-    await page.mouse.move(targetX, currentY, { steps: 3 });
+    await mouse.move(targetX, currentY, 3);
 
     // 每步间隔：对数正态分布（多数快、偶尔慢，比均匀分布更接近真人）
     const medianDelay = stepDelayMin + (stepDelayMax - stepDelayMin) * 0.4;
@@ -748,9 +980,9 @@ async function humanLikeDrag(
   // 4. 终点过冲后回退（人类拖动常见行为：滑过头再退回来）
   await page.waitForTimeout(30 + Math.random() * 70);
   const overshoot = 5 + Math.random() * 8;  // 过冲 5-13px
-  await page.mouse.move(actualStartX + distance + overshoot, actualStartY + (Math.random() - 0.5) * 10, { steps: 4 });
+  await mouse.move(actualStartX + distance + overshoot, actualStartY + (Math.random() - 0.5) * 10, 4);
   await page.waitForTimeout(50 + Math.random() * 80);
-  await page.mouse.move(actualStartX + distance, actualStartY + (Math.random() - 0.5) * 6, { steps: 4 });
+  await mouse.move(actualStartX + distance, actualStartY + (Math.random() - 0.5) * 6, 4);
 
   // 5. 释放前微调（真人释放前常有 1-2 次微小位置修正，非完美静止释放）
   const numAdjustments = Math.random() < 0.7 ? 1 : 2;  // 70% 概率 1 次，30% 概率 2 次
@@ -758,12 +990,12 @@ async function humanLikeDrag(
     await page.waitForTimeout(40 + Math.random() * 60);
     const adjustX = (Math.random() - 0.5) * 4;
     const adjustY = (Math.random() - 0.5) * 4;
-    await page.mouse.move(actualStartX + distance + adjustX, actualStartY + adjustY, { steps: 2 });
+    await mouse.move(actualStartX + distance + adjustX, actualStartY + adjustY, 2);
   }
   // 释放前短暂停顿（50-120ms）
   await page.waitForTimeout(50 + Math.random() * 70);
   // 鼠标释放（真实 mouseup 事件）
-  await page.mouse.up();
+  await mouse.up(actualStartX + distance, lastY);
 }
 
 /**
@@ -813,8 +1045,9 @@ async function humanLikeDragOutOfContainer(
   await page.mouse.move(startX, startY, { steps: 5 });
   await page.waitForTimeout(100 + Math.random() * 150);
 
-  // 2. 鼠标按下
-  await page.mouse.down();
+  // 2. 鼠标按下（CDP 带 deltaX/deltaY，修复 movementX=0 机器人特征）
+  const mouse = await createDragMouse(page, startX, startY);
+  await mouse.down(startX, startY);
   await page.waitForTimeout(80 + Math.random() * 100);
 
   // 3. 生成 2-3 个"出容器拐点"
@@ -859,7 +1092,7 @@ async function humanLikeDragOutOfContainer(
     const jitter = (Math.random() - 0.5) * 10;
     const currentY = startY + baseArc + yOffset + jitter;
 
-    await page.mouse.move(targetX, currentY, { steps: 1 });
+    await mouse.move(targetX, currentY, 1);
 
     // 每步间隔随机化 + 钟形权重
     const delayWeight = 1 - bellCurve * 0.5;
@@ -875,21 +1108,197 @@ async function humanLikeDragOutOfContainer(
   const overshoot = 5 + Math.random() * 10;
   // 过冲点 Y 偏移（可能在容器外）
   const overshootYOffset = (Math.random() - 0.5) * 40;  // ±20px
-  await page.mouse.move(startX + distance + overshoot, startY + overshootYOffset, { steps: 2 });
+  await mouse.move(startX + distance + overshoot, startY + overshootYOffset, 2);
   await page.waitForTimeout(50 + Math.random() * 80);
   // 回到终点（Y 仍有偏移，可能在容器外）
   const endYOffset = (Math.random() - 0.5) * 30;  // ±15px
-  await page.mouse.move(startX + distance, startY + endYOffset, { steps: 2 });
+  await mouse.move(startX + distance, startY + endYOffset, 2);
 
   // 6. 释放前停顿
   await page.waitForTimeout(50 + Math.random() * 70);
-  await page.mouse.up();
+  await mouse.up(startX + distance, startY + endYOffset);
+}
+
+/**
+ * 基于物理模型的人类拖动模拟（最小急动度剖面）
+ *
+ * 同步自商业版 sliderSolve.py 的 human_physics_drag 默认轨迹方案。
+ * 基于 Hogan 1984 / Flash & Hogan 1985 的最小急动度剖面（Minimum Jerk Profile），
+ * 这是人类 reaching 运动的最优数学模型，产生平滑的钟形速度曲线。
+ *
+ * 反检测特性：
+ * 1. 起始位置噪声 ±0.5px（人类无法像素级精准定位）
+ * 2. 距离噪声 ±1px（Baxia 精度要求 ±1-2px）
+ * 3. 总时长 700-1300ms（人类拖动滑块典型时长）
+ * 4. 步数 100-140（接近 125Hz 鼠标采样率）
+ * 5. 位置剖面 10·t³ - 15·t⁴ + 6·t⁵（最小急动度，平滑钟形速度）
+ * 6. 随机游走噪声 ±1.2px（累积型，频谱宽带，不被 ML 频谱分析识别）
+ * 7. X 强制不回退（Baxia 对 X 回退敏感，真实拖动 X 单调递增）
+ * 8. 1-2 次微停顿 30-80ms（模拟真人拖动时的犹豫）
+ * 9. 释放前 Y 上移 2px + 释放后鼠标移开（人类松手后的自然动作）
+ * 10. 接近轨迹 + 按下停顿 + 终点过冲回退
+ */
+async function humanPhysicsDrag(
+  page: Page,
+  frame: any,
+  button: any,
+  startX: number,
+  startY: number,
+  distance: number,
+  attempt: number = 1
+): Promise<void> {
+  // 起始位置加入微小噪声（人类无法精准定位到像素级）
+  const sx = startX + (Math.random() - 0.5) * 1.0;
+  const sy = startY + (Math.random() - 0.5) * 1.0;
+  // 距离加入 ±1px 噪声（Baxia 精度要求 ±1-2px）
+  const dist = distance + (Math.random() - 0.5) * 2;
+
+  // 总时长 0.7-1.3 秒（人类拖动滑块典型时长）
+  const total_time_ms = 700 + Math.random() * 600;
+  // 步数 100-140（接近 125Hz 鼠标采样率）
+  const steps = 100 + Math.floor(Math.random() * 41);
+  const avg_delay = total_time_ms / steps;
+
+  // Y 轴慢漂移参数（模拟手部整体移动趋势）
+  const yDriftAmp = 2.0 + Math.random() * 3.0;      // 2-5px 漂移幅度
+  const yDriftPhase = Math.random() * Math.PI * 2;
+  // 抖动幅度（0.5-1.5px，随机噪声非正弦波）
+  const tremorAmp = 0.5 + Math.random() * 1.0;
+  // 随机游走位置噪声（累积型，频谱宽带，不被 ML 频谱分析识别）
+  let noiseAccum = 0.0;
+  // 微停顿：1-2 次随机停顿（30-80ms）
+  const pauseCount = 1 + Math.floor(Math.random() * 2);
+  const pausePositions = [0.15, 0.35, 0.55, 0.75]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, Math.min(pauseCount, 4))
+    .sort((a, b) => a - b);
+  let pauseIdx = 0;
+  // 过冲参数（2-6px 过冲后修正，人类自然行为）
+  const overshootPx = 2 + Math.random() * 4;
+  const overshootPauseMs = 40 + Math.random() * 60;
+
+  console.log(`[SliderSolver] humanPhysicsDrag 入口: startX=${sx.toFixed(1)}, startY=${sy.toFixed(1)}, distance=${dist.toFixed(1)}, attempt=${attempt}, steps=${steps}, totalMs=${total_time_ms.toFixed(0)}`);
+
+  // 1. 接近轨迹：从按钮附近随机点移入
+  const approachAngle = Math.random() * Math.PI * 2;
+  const approachDist = 30 + Math.random() * 60;
+  const approachX = sx + Math.cos(approachAngle) * approachDist;
+  const approachY = sy + Math.sin(approachAngle) * approachDist;
+  await page.mouse.move(approachX, approachY, { steps: 6 });
+  await page.waitForTimeout(80 + Math.random() * 120);
+  // 移动到按钮
+  const approachSteps = 3 + Math.floor(Math.random() * 3);
+  for (let i = 1; i <= approachSteps; i++) {
+    const t = i / approachSteps;
+    const eased = t * t * (3 - 2 * t);
+    await page.mouse.move(
+      approachX + (sx - approachX) * eased,
+      approachY + (sy - approachY) * eased,
+      { steps: 4 },
+    );
+    await page.waitForTimeout(10 + Math.random() * 20);
+  }
+  // 移动到按钮后的"思考"停顿（100-250ms）
+  await page.waitForTimeout(100 + Math.random() * 150);
+
+  // 2. 鼠标按下（CDP 带 deltaX/deltaY，修复 movementX=0 机器人特征）
+  const mouse = await createDragMouse(page, sx, sy);
+  await mouse.down(sx, sy);
+  await page.waitForTimeout(80 + Math.random() * 100);
+  // 按下后微小漂移（真人按下到开始拖动之间鼠标常有 1-2px 漂移）
+  await mouse.move(sx + (Math.random() - 0.5) * 3, sy + (Math.random() - 0.5) * 3, 3);
+  await page.waitForTimeout(30 + Math.random() * 50);
+
+  // 3. 分多步拖动，使用最小急动度位置剖面 + 随机游走噪声 + 强制不回退
+  // jerk_pos(t) = 10·t³ - 15·t⁴ + 6·t⁵，t∈[0,1]
+  // 这是人类 reaching 运动的最优模型，产生平滑的钟形速度曲线
+  let lastX = sx;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    // 最小急动度位置剖面
+    const jerkPos = 10 * t * t * t - 15 * t * t * t * t + 6 * t * t * t * t * t;
+    // 随机游走位置噪声（累积型，±0.12/步，钳制 ±1.2px）
+    noiseAccum += (Math.random() - 0.5) * 0.24;
+    noiseAccum = Math.max(-1.2, Math.min(1.2, noiseAccum));
+    let targetX = sx + dist * jerkPos + noiseAccum;
+    // 确保 X 不回退（Baxia 对 X 回退敏感，真实拖动 X 单调递增）
+    if (targetX < lastX) {
+      targetX = lastX + 0.1 + Math.random() * 0.4;
+    }
+    // X 轴微小噪声（人类手指无法完美直线移动）
+    targetX += (Math.random() - 0.5) * 0.4;
+
+    // Y 轴：慢漂移 + 随机抖动（减速段抖动逐渐减小到 50%）
+    const yDrift = Math.sin(t * Math.PI + yDriftPhase) * yDriftAmp * 0.3;
+    let yTremor = (Math.random() - 0.5) * 2 * tremorAmp;
+    if (t > 0.7) {
+      yTremor *= (1.0 - ((t - 0.7) / 0.3) * 0.5);
+    }
+    const targetY = sy + yDrift + yTremor;
+
+    await mouse.move(targetX, targetY, 1);
+
+    // 事件间隔：接近 125Hz，加入随机波动
+    const delay = Math.max(3, avg_delay + (Math.random() - 0.5) * 7);
+    await page.waitForTimeout(delay);
+
+    lastX = targetX;
+
+    // 微停顿（1-2 次，30-80ms）
+    if (pauseIdx < pausePositions.length && t >= pausePositions[pauseIdx]) {
+      pauseIdx++;
+      const pauseMs = 30 + Math.random() * 50;
+      const pauseSteps = Math.max(1, Math.floor(pauseMs / 30));
+      for (let p = 0; p < pauseSteps; p++) {
+        const pDrift = Math.sin(t * Math.PI + yDriftPhase) * yDriftAmp * 0.3;
+        await mouse.move(
+          lastX + (Math.random() - 0.5) * 0.8,
+          sy + pDrift + (Math.random() - 0.5) * 2 * tremorAmp * 0.6,
+          1,
+        );
+        await page.waitForTimeout(25 + Math.random() * 10);
+      }
+    }
+  }
+
+  // 4. 终点过冲后回退（人类拖动常见行为：滑过头再退回来）
+  const endX = sx + dist;
+  await mouse.move(endX + overshootPx, sy + (Math.random() - 0.5) * 2, 1);
+  await page.waitForTimeout(overshootPauseMs);
+  // 修正回终点（2-3 次微调）
+  for (let a = 0; a < 2 + Math.floor(Math.random() * 2); a++) {
+    await mouse.move(endX + (Math.random() - 0.5) * 1.6, sy + (Math.random() - 0.5) * 2, 1);
+    await page.waitForTimeout(40 + Math.random() * 80);
+  }
+
+  // 5. 释放前：Y 轴微微上移（人类释放时手会自然抬起）
+  await mouse.move(endX + (Math.random() - 0.5) * 1, sy - 2 + (Math.random() - 0.5) * 2, 1);
+  await page.waitForTimeout(150 + Math.random() * 200);
+  // 鼠标释放
+  await mouse.up(endX + (Math.random() - 0.5) * 1, sy - 2 + (Math.random() - 0.5) * 2);
+  await page.waitForTimeout(80 + Math.random() * 120);
+
+  // 6. 释放后：鼠标自然移开（模拟人类松手后移开）
+  for (let i = 0; i < 3; i++) {
+    const awayX = endX + 20 + i * 15 + (Math.random() - 0.5) * 16;
+    const awayY = sy + 10 + (Math.random() - 0.5) * 30;
+    await page.mouse.move(awayX, awayY, { steps: 1 });
+    await page.waitForTimeout(30 + Math.random() * 40);
+  }
 }
 
 /**
  * 检测滑块验证是否通过
  */
 async function checkSolved(page: Page, frame: any): Promise<boolean> {
+  // 假成功防护：页面加载失败（chrome-error://）时 document.body 为空，
+  // 会导致 detect_captcha_container 返回 False + checkSolved 返回 True → 误判"验证通过"（假成功）。
+  // 必须在判定"通过"前检查 page.url 是否含 chrome-error:// 或 chromewebdata。
+  if (pageShowsLoadFailure(page)) {
+    console.warn('[SliderSolver] 检测到页面加载失败（chrome-error://），判定为未通过（防止假成功）');
+    return false;
+  }
+
   // 成功标识
   const successSelectors = ['.nc_ok', '.success', '#nc_1_n1z.success', '.icon-success'];
   for (const sel of successSelectors) {
@@ -916,9 +1325,25 @@ async function checkSolved(page: Page, frame: any): Promise<boolean> {
     }
   }
 
-  // 滑块弹窗消失也视为通过
-  const stillHasCaptcha = await detectCaptcha(page);
-  return !stillHasCaptcha.detected;
+  // 关键修复（2026-07-31 事故）：Baxia 验证中的等待逻辑
+  // 原先拖动后只等待 2 秒就检测，但 Baxia 验证可能需要 3-5 秒。
+  // 如果滑块弹窗仍在（验证中），原先直接返回 false（未通过），
+  // 然后 checkClickToRetry 误判为失败（因为 .nc-lang-cnt 可见），
+  // 进入重试循环，5 次重试全部浪费在"验证中"状态。
+  // 修复后：如果滑块弹窗仍在，等待 3 秒后再次检测，最多重试 3 次（共 9 秒）。
+  for (let waitRound = 0; waitRound < 3; waitRound++) {
+    const stillHasCaptcha = await detectCaptcha(page);
+    if (!stillHasCaptcha.detected) {
+      // 滑块弹窗消失，视为通过
+      return true;
+    }
+    // 等待 3 秒后再次检测
+    if (waitRound < 2) {
+      await page.waitForTimeout(3000);
+    }
+  }
+  // 3 次检测后滑块弹窗仍在，判定为未通过
+  return false;
 }
 
 // ============================================================
@@ -999,11 +1424,15 @@ async function checkClickToRetry(
   frame: any
 ): Promise<{ needsClick: boolean; retryTarget?: any }> {
   // 1. 检测失败/重试标识元素（Baxia 标准类名）
+  // 关键修复（2026-07-31 事故）：移除 .nc-lang-cnt
+  // .nc-lang-cnt 是滑块按钮本身的容器（在 getSliderInfo 的 buttonSelectors 中也包含它），
+  // 不是失败标识。原先把它放在 retrySelectors 中，导致每次拖动后只要滑块按钮还在
+  // （Baxia 验证中），就会误判为"检测到失败提示"，进入重试循环，5 次重试全部浪费。
+  // 修复后：只有明确的失败标识（.nc_error/.errloading/#nc_1_refresh1/.fail）才触发重试。
   const retrySelectors = [
     '.nc_error',
     '.errloading',
     '#nc_1_refresh1',
-    '.nc-lang-cnt',
     '.fail',
   ];
 
@@ -1021,6 +1450,7 @@ async function checkClickToRetry(
       try {
         const elem = await f.$(sel);
         if (elem && await elem.isVisible()) {
+          console.log(`[SliderSolver] checkClickToRetry 命中选择器: ${sel}`);
           return { needsClick: true, retryTarget: elem };
         }
       } catch { /* ignore */ }
@@ -1028,15 +1458,27 @@ async function checkClickToRetry(
   }
 
   // 2. 检测"验证失败，点击框体重试"文本
+  // 关键修复（2026-07-31 事故）：收紧文本匹配，避免误判
+  // 原先的正则 /error:/ 会匹配到 URL 参数、JS 错误信息等非失败文本，
+  // /请重试/ 会匹配到"请稍后重试"等非滑块失败的提示。
+  // 修复后：只匹配明确的滑块验证失败文本，且要求文本长度较短（<200字符），
+  // 避免匹配到页面正文中的无关内容。
   for (const f of searchFrames) {
     if (!f) continue;
     try {
       const hasRetryText = await f.evaluate(() => {
         const text = document.body ? document.body.innerText : '';
-        // 覆盖多种失败提示文本
-        return /验证失败|点击框体重试|点击重试|请重试|error:|滑块加载失败|加载失败|滑动失败|验证未通过/i.test(text);
+        // 只在文本较短（<200字符）时检测，避免匹配到页面正文
+        if (text.length > 200) return false;
+        // 覆盖多种失败提示文本：
+        // - "验证失败，点击框体重试(error:HxnXjf)"
+        // - "滑块加载失败"
+        // - "滑动失败"
+        // - "验证未通过"
+        return /验证失败.*点击框体重试|点击框体重试|滑块加载失败|滑动失败|验证未通过/i.test(text);
       }).catch(() => false);
       if (hasRetryText) {
+        console.log(`[SliderSolver] checkClickToRetry 命中失败文本`);
         // 找到可点击的弹窗容器
         for (const sel of ['#nc_1', '.nc_wrapper', '#baxia-dialog', '.nc-lang-cnt', '.slide-verify']) {
           try {
@@ -1206,30 +1648,56 @@ async function closeCaptchaDialog(page: Page): Promise<boolean> {
  * 用户反馈两种需要刷新的小弹窗：
  * - 场景5：多次"验证失败，点击框体重试"后弹出"刷新页面"小弹窗
  * - 场景6：滑块弹窗后又弹出"连接中断，请重连"弹窗（两个弹窗共存）
+ *
+ * 检测到任一弹窗后，直接刷新页面，然后重新尝试滑块验证。
+ *
+ * 特征：通常是一个模态对话框，包含"刷新"/"重新加载"/"连接中断"/"请重连"等文本。
  */
 async function checkRefreshDialog(page: Page): Promise<boolean> {
+  // 判断 frame 是否应该被检测"刷新/连接中断"弹窗
+  // 排除：Baxia punish frame（_____tmd_____/punish）、第三方脚本 frame（非 goofish.com）
+  // 原因：Baxia punish frame 的 nocaptcha/nc.js 脚本中包含"重新加载"、"刷新"等词，
+  //       会导致误判为"刷新弹窗"，从而在拖动前一直刷新页面，永远没机会拖动滑块。
+  const isCheckableFrame = (f: any): boolean => {
+    try {
+      const url: string = f.url() || '';
+      if (!url) return false;
+      // 排除 Baxia punish / 验证码 frame
+      if (/_____tmd_____|punish|baxia|nocaptcha|captcha|verify/i.test(url)) return false;
+      // 只检测 goofish.com 主 frame（IM 页面），排除第三方脚本 frame
+      if (!/goofish\.com/i.test(url)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const checkFrame = async (f: any) => {
     try {
       return await f.evaluate(() => {
-        const text = document.body ? document.body.innerText : '';
-        // 匹配刷新弹窗的文本特征
-        if (/请刷新页面|刷新重试|刷新页面后重试|网络异常.*刷新|页面已失效.*刷新|重新加载|刷新试试|刷新后重试|连接中断|连接已断开|网络连接中断|请重连|重新连接/i.test(text)) {
-          return true;
-        }
-        // 检测常见的刷新/重连按钮/弹窗元素
-        const refreshSelectors = [
-          '.refresh-btn', '.reload-btn', '.refresh-dialog',
-          '.modal-refresh', '.dialog-refresh',
-          'button[class*="refresh"]', 'button[class*="reload"]',
-          'button[class*="reconnect"]', '.reconnect-btn',
-          '.ant-modal-confirm', '.next-dialog',
-          '.next-dialog-message', '.ant-modal-body',
+        // 严格检测：必须有可见的 modal/dialog 元素，且元素内有明确的"刷新"按钮文本
+        // 不再检测整个 body 的 innerText，避免误判闲鱼 IM 页面的 WebSocket 状态提示（如"连接中断"）
+        // 误判根因：闲鱼 IM 页面在风控触发时会显示"连接中断"等 WebSocket 状态提示，
+        //          但这只是连接状态，不是真的需要刷新页面，滑块验证仍然可以进行。
+        const modalSelectors = [
+          '.ant-modal-confirm', '.ant-modal-body', '.ant-modal',
+          '.next-dialog', '.next-dialog-message',
+          '.refresh-dialog', '.modal-refresh', '.dialog-refresh',
+          '[role="dialog"]', '[class*="modal"]', '[class*="dialog"]',
         ];
-        for (const sel of refreshSelectors) {
-          const elem = document.querySelector(sel);
-          if (elem) {
-            const elemText = elem.textContent || '';
-            if (/刷新|重新加载|reload|refresh|连接中断|重连|重新连接/i.test(elemText)) {
+        for (const sel of modalSelectors) {
+          const elems = document.querySelectorAll(sel);
+          for (const elem of elems) {
+            // 必须可见
+            const rect = elem.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            const style = window.getComputedStyle(elem);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+            // 元素文本必须包含明确的"刷新页面"指令（不是"连接中断"等状态提示）
+            const elemText = (elem.textContent || '').trim();
+            if (elemText.length === 0) continue;
+            // 只匹配明确的"请刷新页面"指令，不匹配"连接中断"等状态提示
+            if (/请刷新页面|刷新重试|刷新页面后重试|网络异常.*请刷新|页面已失效.*请刷新|刷新后重试/i.test(elemText)) {
               return true;
             }
           }
@@ -1241,9 +1709,11 @@ async function checkRefreshDialog(page: Page): Promise<boolean> {
     }
   };
 
-  if (await checkFrame(page)) return true;
+  // 只检测 goofish.com 主 frame，排除 Baxia punish frame
+  if (isCheckableFrame(page) && await checkFrame(page)) return true;
   for (const f of page.frames()) {
     if (f === page.mainFrame()) continue;
+    if (!isCheckableFrame(f)) continue;
     if (await checkFrame(f)) return true;
   }
   return false;
@@ -1422,9 +1892,9 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
   const startTime = Date.now();
   const targetUrl = options.targetUrl || DEFAULT_TARGET_URL;
   const headless = resolveHeadlessMode(options.headless);
-  // 默认重试 4 次（开源版已削弱本地求解能力）
-  const retries = Number(options.maxRetries ?? 4);
-  const maxRetries = Number.isSafeInteger(retries) ? Math.max(1, Math.min(retries, 10)) : 4;
+  // 默认重试 5 次（与商业版对齐，强化本地求解能力）
+  const retries = Number(options.maxRetries ?? 5);
+  const maxRetries = Number.isSafeInteger(retries) ? Math.max(1, Math.min(retries, 10)) : 5;
   const timeout = Number(options.timeoutMs ?? 30000);
   const timeoutMs = Number.isSafeInteger(timeout) ? Math.max(5000, Math.min(timeout, 180000)) : 30000;
 
@@ -1617,16 +2087,28 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
     let clickRetryCount = 0;
     const MAX_CLICK_RETRIES = 5;
     // 真人行动模拟：连续失败 N 次后触发"关闭弹窗→刷新页面→冷静期→重新尝试"
-    const HUMAN_ACTION_THRESHOLD = 3;  // 连续失败 3 次后触发
-    const MAX_HUMAN_ACTIONS = 1;       // 开源版已削弱真人行动模拟次数（原 2 次，削弱为 1 次）
+    // 2026-08-04 对齐商业版参数（HUMAN_ACTION_THRESHOLD=2 / MAX_HUMAN_ACTIONS=1 / 冷静期 7-11s）
+    const HUMAN_ACTION_THRESHOLD = 2;  // 连续失败 2 次后触发（与商业版对齐）
+    const MAX_HUMAN_ACTIONS = 1;       // 最多触发 1 次真人行动（与商业版对齐）
     let humanActionCount = 0;
-    // 真人行动刷新后的冷静期标志：刷新完成后不立即操作，等待 3-7 秒让 Baxia 检测状态自然重置
+    // 真人行动刷新后的冷静期标志：刷新完成后不立即操作，等待 7-11 秒让 Baxia 检测状态自然重置
     let needCooldownAfterHumanAction = false;
 
     // 使用 while 循环，让场景4(下载消息失败)和场景5(刷新小弹窗)的刷新重试
     // 不占用 maxRetries 的滑动重试配额，否则5次滑动配额会被刷新操作耗尽
     let attempt = 0;
+    // 总尝试次数硬上限：防止 attempt-- 回退 + 多种重试叠加导致循环次数超预期
+    // 理论最大循环次数 = maxRetries(5) + MAX_REFRESH_RETRIES(3) + MAX_DOWNLOAD_RETRIES(2) + MAX_CLICK_RETRIES(5) = 15
+    // 设置 maxRetries * 3 作为硬上限，接近整体超时前必须退出（与商业版对齐）
+    const MAX_TOTAL_ATTEMPTS = Math.max(maxRetries * 3, 15);
+    let totalAttempts = 0;
     while (attempt < maxRetries) {
+      totalAttempts++;
+      if (totalAttempts > MAX_TOTAL_ATTEMPTS) {
+        console.warn(`[SliderSolver] 总尝试次数已达上限 (${MAX_TOTAL_ATTEMPTS})，强制退出循环`);
+        lastError = lastError || `滑块求解总尝试次数超限 (${MAX_TOTAL_ATTEMPTS})`;
+        break;
+      }
       attempt++;
       attempts = attempt;
 
@@ -1639,6 +2121,22 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
         needReloadForRefresh = false;
         console.log(`[SliderSolver] 从首页重新打开消息页窗口（${reason}重试）`);
         try {
+          // 关键：刷新重试前必须清除 Baxia 在访问过程中通过 Set-Cookie 重新设置的 risk cookies。
+          // 初始化时 stripRiskCookies 只清除原始 cookie 中的 risk 字段，但浏览器访问 goofish.com 时
+          // Baxia 会重新设置这些标记。带着 risk cookies 重新访问会持续被判定为高风险，
+          // 形成"刷新→带 risk cookies→再次 punish→刷新"死循环。
+          try {
+            const currentCookies = await context.cookies();
+            const cleanCookies = currentCookies.filter((c: any) => !RISK_COOKIE_NAMES.includes(c.name));
+            const removedCount = currentCookies.length - cleanCookies.length;
+            if (removedCount > 0) {
+              console.log(`[SliderSolver] 刷新重试前清除 ${removedCount} 个 risk cookies`);
+              await context.clearCookies();
+              await context.addCookies(cleanCookies);
+            }
+          } catch (e: any) {
+            console.warn(`[SliderSolver] 清除 risk cookies 失败（不影响主流程）: ${safeErrorType(e)}`);
+          }
           // 关闭旧的消息页窗口（如果不是首页窗口）
           if (page !== homePage) {
             await page.close().catch(() => {});
@@ -1657,10 +2155,11 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
         }
       }
 
-      // 真人行动冷静期：刷新完成后不立即操作，等待 3-7 秒让 Baxia 检测状态自然重置
+      // 真人行动冷静期：刷新完成后不立即操作，等待 7-11 秒让 Baxia 检测状态自然重置
+      // 2026-08-04 对齐商业版：原 3-7 秒调整为 7-11 秒
       if (needCooldownAfterHumanAction) {
         needCooldownAfterHumanAction = false;
-        const cooldownMs = 3000 + Math.floor(Math.random() * 4000);  // 3-7 秒
+        const cooldownMs = 7000 + Math.floor(Math.random() * 4000);  // 7-11 秒（与商业版对齐）
         console.log(`[SliderSolver] 真人行动：页面刷新完成，等待 ${cooldownMs}ms 冷静期（不进行任何操作）...`);
         await page.waitForTimeout(cooldownMs);
         console.log(`[SliderSolver] 冷静期结束，开始检测滑块`);
@@ -1680,6 +2179,17 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
           // ★ 关键修复：Cookie 过期时页面可能已跳转到登录页（SPA 路由延迟跳转），
           // goto 后 1.5 秒内可能还没跳转，但此时已检测不到滑块。
           // 必须在"无弹窗"时再次检测登录页，避免误报"已通过"导致 cookie_status 错误恢复。
+          // 假成功防护：页面加载失败（chrome-error://）时 document.body 为空，
+          // detectCaptcha 返回 false 会被误判为"已通过"。必须先检测页面加载状态。
+          if (pageShowsLoadFailure(page)) {
+            console.warn('[SliderSolver] 二次确认时检测到页面加载失败（chrome-error://），触发刷新重试');
+            if (refreshRetryCount < MAX_REFRESH_RETRIES) {
+              refreshRetryCount++;
+              needReloadForRefresh = true;
+              attempt--;
+              continue;
+            }
+          }
           if (await checkLoginPage(page)) {
             console.warn('[SliderSolver] 二次确认时检测到登录页，Cookie Session 已过期');
             return {
@@ -1725,6 +2235,17 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
 
       console.log(`[SliderSolver] 检测到滑块: selector=${detected.selector}`);
       const frame = detected.iframe || page.mainFrame();
+
+      // Punish 状态检测（同步自商业版 sliderSolver.ts）
+      // 关键：punish URL（含 _____tmd_____ 或 punish）统一视为 account_punished（可拖动），
+      // 不得因 URL 含 login.token 而误判为 cookie_invalid（login.token 是 WS token 刷新 API 名字，
+      // 不是 Cookie 失效信号）。Cookie 是否真正失效只能通过 checkLoginPage 检测真实登录页跳转判断。
+      // 注意：开源版无 Python patchright fallback，punish 状态下仍必须尝试拖动滑块
+      // （拖动是脱离 punish 状态的唯一途径），连续失败由真人行动机制兜底。
+      const isPunished = await checkPunishedFrame(frame);
+      if (isPunished) {
+        console.log(`[SliderSolver] 检测到 Baxia punish 状态，仍尝试拖动滑块（脱离 punish 的唯一途径）`);
+      }
 
       // 场景5/场景6：拖动前持续检测"刷新页面"/"连接中断"小弹窗
       if (await checkRefreshDialog(page)) {
@@ -1786,14 +2307,49 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
       console.log(`[SliderSolver] 开始拖动滑块: startX=${startX}, distance=${trackWidth}, attempt=${attempt}`);
       // 拖动前截图（视觉复盘）
       await saveDebugScreenshot(page, `slider-pre-${attempt}`);
-      // 阅读弹窗的短暂停顿
-      await page.waitForTimeout(400 + Math.random() * 700);
+      // === 拖动前真人行为模拟（与商业版对齐） ===
+      // 问题：从日志看，拖动后立即出现 .errloading，FireyeJS 在拖动过程中就判定为机器人。
+      // 原因：FireyeJS 不仅分析拖动轨迹，还分析拖动前的鼠标行为。
+      //       机器人特征：页面加载后鼠标完全静止，直到拖动时才突然移动。
+      //       真人特征：看到滑块后鼠标会在页面上移动、犹豫一下再拖动。
+      // 优化：拖动前模拟真人浏览行为（鼠标移动 2-3 次 + 移到滑块附近 + 阅读停顿 0.8-2s）。
+      try {
+        // 1. 在页面上随机移动鼠标 2-3 次（模拟真人看到滑块后鼠标的随机移动）
+        const viewportWidth = page.viewportSize()?.width || 1280;
+        const viewportHeight = page.viewportSize()?.height || 720;
+        for (let m = 0; m < 2 + Math.floor(Math.random() * 2); m++) {
+          const rx = 100 + Math.random() * (viewportWidth - 200);
+          const ry = 100 + Math.random() * (viewportHeight - 200);
+          await page.mouse.move(rx, ry, { steps: 3 + Math.floor(Math.random() * 5) });
+          await page.waitForTimeout(200 + Math.random() * 400);
+        }
+        // 2. 鼠标移动到滑块附近（但不是直接到滑块中心）
+        await page.mouse.move(startX + (Math.random() - 0.5) * 60, startY + (Math.random() - 0.5) * 40, { steps: 5 });
+        await page.waitForTimeout(300 + Math.random() * 500);
+        // 3. 阅读弹窗的停顿（真人看到滑块后会停留 1-2 秒阅读弹窗内容）
+        await page.waitForTimeout(800 + Math.random() * 1200);
+      } catch (e) {
+        // 行为模拟失败不影响拖动流程
+        console.log(`[SliderSolver] 拖动前行为模拟失败（可忽略）: ${safeErrorType(e)}`);
+      }
       try {
         // 使用 page.mouse API 生成真实鼠标事件（isTrusted=true），对抗 Baxia 风控的合成事件检测
         // 传入 attempt 让每次重试使用不同的滑动速度和停顿策略，模拟真人滑动
-        // 开源版仅使用容器内拖动方法（已削弱本地求解能力，移除超出容器拖动方法轮换）
-        console.log(`[SliderSolver] attempt=${attempt} 使用容器内拖动方法`);
-        await humanLikeDrag(page, ownerFrame || frame, button, startX, startY, trackWidth, attempt);
+        // 三种轨迹方案轮换（与商业版默认轨迹方案对齐，强化本地求解能力）：
+        //   attempt % 3 === 1 → humanLikeDrag（容器内拖动，多策略速度）
+        //   attempt % 3 === 2 → humanLikeDragOutOfContainer（超出容器拖动，Y 大幅偏移）
+        //   attempt % 3 === 0 → humanPhysicsDrag（最小急动度剖面，物理模型）
+        const dragStrategy = attempt % 3;
+        if (dragStrategy === 1) {
+          console.log(`[SliderSolver] attempt=${attempt} 使用容器内拖动方法 (humanLikeDrag)`);
+          await humanLikeDrag(page, ownerFrame || frame, button, startX, startY, trackWidth, attempt);
+        } else if (dragStrategy === 2) {
+          console.log(`[SliderSolver] attempt=${attempt} 使用超出容器拖动方法 (humanLikeDragOutOfContainer)`);
+          await humanLikeDragOutOfContainer(page, ownerFrame || frame, button, startX, startY, trackWidth, attempt);
+        } else {
+          console.log(`[SliderSolver] attempt=${attempt} 使用最小急动度物理拖动方法 (humanPhysicsDrag)`);
+          await humanPhysicsDrag(page, ownerFrame || frame, button, startX, startY, trackWidth, attempt);
+        }
       } catch (e: any) {
         lastError = '拖动滑块异常，请稍后重试';
         console.error(`[SliderSolver] operation=drag errorType=${safeErrorType(e)}`);

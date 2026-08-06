@@ -277,3 +277,124 @@ async def get_remote_solve_stats_route(
     except Exception as exc:
         logger.error("获取远程滑块统计失败 errorType=%s", type(exc).__name__)
         return ResultObject.internal_error()
+
+# ============================================================
+# 滑块求解活跃记录 & 重试（同步商业版前端调用约定）
+# ============================================================
+
+# 活跃状态定义：未到达终态的求解记录（success/fail 为终态）
+ACTIVE_STATUSES = ("solving", "queued", "retrying", "timeout", "precheck_rejected")
+
+
+@router.get("/solve-records", response_model=ResultObject[dict])
+async def list_active_solve_records(
+    accountId: int = 0,
+    status: str = "",
+    current_user: dict = Depends(get_current_user),
+):
+    """查询滑块求解记录（兼容商业版前端调用约定）。
+
+    查询参数:
+        accountId: 账号ID筛选（可选）
+        status: 状态筛选（可选）。
+                传 "active" 时返回所有未到达终态的活跃记录（solving/queued/retrying/timeout/precheck_rejected）；
+                传其他具体状态值时按该状态精确过滤。
+    """
+    try:
+        from sqlalchemy import text
+        from ....core.database import async_session
+
+        where_clauses = ["deleted = 0"]
+        params: dict = {}
+
+        if accountId:
+            where_clauses.append("account_id = :aid")
+            params["aid"] = int(accountId)
+
+        if status == "active":
+            placeholders = ",".join([f":s{i}" for i in range(len(ACTIVE_STATUSES))])
+            where_clauses.append(f"status IN ({placeholders})")
+            for i, s in enumerate(ACTIVE_STATUSES):
+                params[f"s{i}"] = s
+        elif status:
+            where_clauses.append("status = :status")
+            params["status"] = status
+
+        where_sql = " AND ".join(where_clauses)
+
+        async with async_session() as db:
+            rows = (await db.execute(
+                text(
+                    "SELECT id, account_id, account_name, event_desc, open_reason, solve_reason, "
+                    "trigger_scene, result, status, engine, retry_count, error_message, "
+                    "created_at, updated_at "
+                    f"FROM xianyu_captcha_solve_record WHERE {where_sql} "
+                    "ORDER BY created_at DESC, id DESC LIMIT 100"
+                ),
+                params,
+            )).mappings().all()
+
+            items = []
+            for row in rows:
+                items.append({
+                    "id": row["id"],
+                    "accountId": row["account_id"],
+                    "accountName": row["account_name"],
+                    "eventDesc": row["event_desc"],
+                    "openReason": row.get("open_reason") or "",
+                    "solveReason": row.get("solve_reason") or "",
+                    "triggerScene": row["trigger_scene"],
+                    "result": row["result"],
+                    "status": row["status"],
+                    "engine": row["engine"],
+                    "retryCount": row["retry_count"],
+                    "errorMessage": row["error_message"],
+                    "createdAt": str(row["created_at"]) if row["created_at"] else "",
+                    "updatedAt": str(row["updated_at"]) if row["updated_at"] else "",
+                })
+
+            return ResultObject.success({"list": items, "total": len(items)})
+    except Exception as exc:
+        logger.error("查询活跃求解记录失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()
+
+
+@router.post("/solve-retry", response_model=ResultObject[dict])
+async def retry_captcha_solve(
+    data: dict = {},
+    current_user: dict = Depends(get_current_user),
+):
+    """重试滑块求解。
+
+    请求体: {"accountId": 1, "recordId": 123 (可选)}
+    行为：调用 handle_captcha_for_account 重新触发一次求解（triggerScene=manual_retry），
+          落库新记录并通过 SSE 广播状态。
+    """
+    try:
+        account_id = int(data.get("accountId") or 0)
+        if not account_id:
+            return ResultObject.validate_failed("accountId 不能为空")
+
+        record_id = data.get("recordId")
+        solve_reason = "用户在账号页面点击重试求解按钮"
+        if record_id:
+            solve_reason = f"{solve_reason}（关联记录 #{record_id}）"
+
+        handled = await handle_captcha_for_account(
+            account_id=account_id,
+            response=None,
+            auto_solve=True,
+            trigger_scene="manual_retry",
+            open_reason="用户点击重试求解按钮",
+            solve_reason=solve_reason,
+        )
+        result = handled.get("autoSolveResult") or {}
+        return ResultObject.success({
+            "recovered": bool(handled.get("recovered")),
+            "detected": bool(handled.get("detected")),
+            "result": result,
+            "message": result.get("error") or "重试求解已提交",
+        })
+    except Exception as exc:
+        logger.error("重试滑块求解失败 errorType=%s", type(exc).__name__)
+        return ResultObject.internal_error()

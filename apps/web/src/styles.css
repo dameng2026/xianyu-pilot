@@ -293,7 +293,7 @@ a {
   display: flex;
   gap: 16px;
   align-items: center;
-  z-index: 30
+  z-index: 40
 }
 
 .top-icon {
@@ -1772,10 +1772,7 @@ input {
     grid-template-columns: 1fr
   }
 
-  .topbar {
-    position: absolute
-  }
-
+  /* 保持 .topbar 为 fixed，避免滚动后管理员按钮消失导致无法点击个人中心 */
   .page-head {
     padding-right: 0
   }

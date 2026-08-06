@@ -78,6 +78,20 @@ async def lifespan(app: FastAPI):
         await start_dispatcher()
     except Exception:
         logger.warning("Token refresher start failed", exc_info=True)
+
+    # 启动自动补评价调度器（每小时第5分钟扫描，按账号 schedule_hour 执行）
+    try:
+        from app.services.auto_rate_scheduler import start_auto_rate_scheduler
+        await start_auto_rate_scheduler()
+    except Exception:
+        logger.warning("Auto rate scheduler start failed", exc_info=True)
+
+    # 启动售整自动上架调度器（每3分钟扫描，60秒后首次扫描）
+    try:
+        from app.services.relist_scheduler import start_relist_scheduler
+        await start_relist_scheduler()
+    except Exception:
+        logger.warning("Relist scheduler start failed", exc_info=True)
     
     yield
 
@@ -103,6 +117,16 @@ async def lifespan(app: FastAPI):
         await stop_all()
     except Exception:
         logger.warning("WebSocket shutdown failed", exc_info=True)
+    try:
+        from app.services.auto_rate_scheduler import stop_auto_rate_scheduler
+        await stop_auto_rate_scheduler()
+    except Exception:
+        logger.warning("Auto rate scheduler shutdown failed", exc_info=True)
+    try:
+        from app.services.relist_scheduler import stop_relist_scheduler
+        await stop_relist_scheduler()
+    except Exception:
+        logger.warning("Relist scheduler shutdown failed", exc_info=True)
     try:
         await shutdown_background_tasks()
     except Exception:

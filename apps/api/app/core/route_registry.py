@@ -249,16 +249,6 @@ RETIRED_SURFACES = (
     ),
     RetiredSurface(
         "POST",
-        "/api/goods-sku/list",
-        "当前版本没有 SKU 变体模型；请使用 GET /api/goods/{goods_id} 查询商品主记录。",
-    ),
-    RetiredSurface(
-        "POST",
-        "/api/goods-sku/detail",
-        "当前版本没有 SKU 变体模型；请使用 GET /api/goods/{goods_id} 查询商品主记录。",
-    ),
-    RetiredSurface(
-        "POST",
         "/api/data-panel/stats",
         "旧数据面板兼容接口已移除；请使用 GET /api/dashboard/summary。",
     ),

@@ -1,5 +1,5 @@
-﻿from typing import Optional, List, Any, Literal
-from pydantic import ConfigDict, Field, field_validator
+from typing import Optional, List, Any, Literal
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from ..core.camel import CamelModel
 
 
@@ -9,6 +9,10 @@ class OrderQueryReqDTO(CamelModel):
     order_status: Optional[int] = None
     page_num: Optional[int] = 1
     page_size: Optional[int] = 20
+    # 排序字段：createdAt / buyerName / orderStatus（其它值回退为默认 createdAt）
+    sort_field: Optional[str] = None
+    # 排序方向：asc / desc（默认 desc）
+    sort_order: Optional[str] = None
 
 
 class ConfirmShipmentReqDTO(CamelModel):
@@ -35,7 +39,8 @@ class ManualDeliveryReqDTO(CamelModel):
     model_config = ConfigDict(extra="forbid")
 
     delivery_mode: Literal["text", "card"] = "text"
-    delivery_content: str = Field(min_length=1, max_length=10_000)
+    # 自定义发货时必填；货源库发货（source_id 非空）时可为空，由后端读取货源内容
+    delivery_content: str = Field(default="", max_length=10_000)
     quantity_requested: int = Field(default=1, ge=1, le=100)
     idempotency_key: Optional[str] = Field(
         default=None,
@@ -43,14 +48,22 @@ class ManualDeliveryReqDTO(CamelModel):
         max_length=128,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+    # 货源库发货：传入货源 ID 时从 delivery_text_source 读取内容
+    source_id: Optional[int] = Field(default=None, ge=1)
+    # 触发时机：付款后 / 确认收货后 / 评价后（手动发货仅作记录，默认付款后）
+    delivery_timing: Optional[Literal["after_payment", "after_receipt", "after_review"]] = "after_payment"
 
     @field_validator("delivery_content")
     @classmethod
     def normalize_delivery_content(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("发货内容不能为空")
-        return normalized
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _validate_content_or_source(self) -> "ManualDeliveryReqDTO":
+        # 自定义发货必须有内容；货源库发货内容由后端解析
+        if not self.source_id and not self.delivery_content:
+            raise ValueError("发货内容不能为空（或提供 sourceId 从货源库读取）")
+        return self
 
 
 class OrderVO(CamelModel):

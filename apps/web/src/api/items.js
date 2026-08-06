@@ -10,6 +10,10 @@ export const remoteDeleteItem = data => request.post('/item/remoteDelete', data,
 export const batchDeleteItems = data => request.post('/item/batch/delete', data)
 export const updateItemPrice = data => request.post('/item/updatePrice', data, { timeout: 120000 })
 export const updateAutoReplyStatus = data => request.post('/item/updateAutoReplyStatus', data)
+// 售整自动上架：手动重发（重发商品到闲鱼，成功返回新 itemId）
+export const republishItem = data => request.post('/item/republish', data, { timeout: 180000 })
+// 售整自动上架：切换开关（{ xianyuAccountId, itemId, enabled }）
+export const toggleAutoRelist = data => request.post('/item/auto-relist/toggle', data, { timeout: 30000 })
 // 进度轮询：每 2s 调用一次，用较短超时避免阻塞下一次轮询
 export const getSyncProgress = syncId => request.get(`/item/syncProgress/${syncId}`, { timeout: 15000 })
 export const isSyncing = accountId => request.get(`/item/syncing/${accountId}`)
@@ -28,3 +32,6 @@ export const autoCategoryUpload = (accountId, file, title, description) => {
   return request.post(`/xianyu/accounts/${accountId}/auto-category/upload`, form, { timeout: 120000 })
 }
 export const getAutoCategoryConfig = () => request.get('/xianyu/accounts/auto-category/config')
+
+// 一键擦亮：同步调用闲鱼擦亮 API，可能耗时较长（最多擦亮 50 个商品），给 120s 超时
+export const polishItem = data => request.post('/item/polish', data, { timeout: 120000 })

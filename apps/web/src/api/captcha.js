@@ -12,3 +12,8 @@ export const getCaptchaInstructions = data => request.post('/captcha/instruction
 export const autoSolveCaptcha = data => request.post('/captcha/auto-solve', data, SOLVE_UI_MODE)
 export const handleCaptcha = data => request.post('/captcha/handle', data, SOLVE_UI_MODE)
 export const getCaptchaRecords = (params = {}) => request.get('/captcha/records', { params })
+
+
+// 滑块求解活跃记录 & 重试（同步商业版前端调用约定）
+export const getSolveRecords = (params = {}) => request.get('/captcha/solve-records', { params })
+export const retrySolve = data => request.post('/captcha/solve-retry', data, { timeout: 180000, uiMode: 'background' })

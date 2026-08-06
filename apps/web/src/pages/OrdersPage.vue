@@ -129,8 +129,11 @@
           :columns="columns"
           :rows="rows"
           :selectable="true"
+          :sort-field="query.sortField"
+          :sort-order="query.sortOrder"
           v-model:selectedKeys="selectedKeys"
           @row-click="selectOrder"
+          @header-click="onSortHeaderClick"
         >
           <template #empty><div class="table-empty">暂无订单</div></template>
           <template #orderNo="{ row }">
@@ -292,6 +295,33 @@
               </div>
               <div class="form-grid">
                 <div class="form-field">
+                  <label>发货来源</label>
+                  <div class="source-toggle" role="group" aria-label="发货来源">
+                    <button
+                      type="button"
+                      :class="['source-toggle-btn', { active: manualForm.deliverySource === 'custom' }]"
+                      :disabled="manualFieldsLocked || manualBusy"
+                      @click="manualForm.deliverySource = 'custom'; onDeliverySourceChange()"
+                    >自定义内容</button>
+                    <button
+                      type="button"
+                      :class="['source-toggle-btn', { active: manualForm.deliverySource === 'library' }]"
+                      :disabled="manualFieldsLocked || manualBusy"
+                      @click="manualForm.deliverySource = 'library'; onDeliverySourceChange()"
+                    >货源库选取</button>
+                  </div>
+                </div>
+                <div class="form-field">
+                  <label>触发时机</label>
+                  <select v-model="manualForm.deliveryTiming" class="input" :disabled="manualFieldsLocked || manualBusy">
+                    <option value="after_payment">付款后发货</option>
+                    <option value="after_receipt">确认收货后发货</option>
+                    <option value="after_review">评价后发货</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="form-field">
                   <label>发货方式</label>
                   <select v-model="manualForm.deliveryMode" class="input" :disabled="manualFieldsLocked || manualBusy">
                     <option value="text">文本发货</option>
@@ -303,7 +333,21 @@
                   <input v-model="manualForm.quantityRequested" class="input" type="number" min="1" max="100" step="1" :disabled="manualFieldsLocked || manualBusy" />
                 </div>
               </div>
-              <div class="form-field">
+              <!-- 货源库发货：下拉选择货源 -->
+              <div v-if="manualForm.deliverySource === 'library'" class="form-field">
+                <label>选择货源</label>
+                <select v-model="manualForm.sourceId" class="input" :disabled="manualFieldsLocked || manualBusy">
+                  <option value="" disabled>{{ deliverySourcesLoading ? '加载中...' : (deliverySources.length ? '请选择货源' : '暂无可用货源') }}</option>
+                  <option v-for="src in deliverySources" :key="src.id" :value="src.id">
+                    {{ src.title || `货源 #${src.id}` }}{{ src.deliveryMode ? `（${src.deliveryMode === 'card' ? '卡密' : '文本'}）` : '' }}
+                  </option>
+                </select>
+                <div v-if="deliverySourcesLoaded && !deliverySources.length" class="source-empty-hint">
+                  当前没有可用货源，请先在「文本货源库」中创建。
+                </div>
+              </div>
+              <!-- 自定义发货：手填内容 -->
+              <div v-else class="form-field">
                 <label>发货内容</label>
                 <textarea v-model="manualForm.deliveryContent" class="textarea" rows="5" maxlength="10000" placeholder="请输入发货文本、卡密内容或下载链接" :disabled="manualFieldsLocked || manualBusy"></textarea>
               </div>
@@ -338,6 +382,7 @@ import Pagination from '../components/Pagination.vue'
 import Icon from '../components/Icon.vue'
 import { getAccounts } from '../api/accounts.js'
 import { getOrderDetail, getOrders, getTodayOrderAmount, manualDeliverOrder, syncOrder, syncOrders } from '../api/orders.js'
+import { getDeliverySources } from '../api/autoDelivery.js'
 import { recordsOf, totalOf } from '../utils/apiData.js'
 import { confirmAction } from '../utils/confirmAction.js'
 import { accountName } from '../utils/format.js'
@@ -381,7 +426,9 @@ const query = reactive({
   status: '',
   keyword: '',
   current: 1,
-  size: 20
+  size: 20,
+  sortField: 'createdAt',
+  sortOrder: 'desc'
 })
 
 const manualForm = reactive({
@@ -391,15 +438,25 @@ const manualForm = reactive({
   quantityRequested: 1,
   orderId: null,
   idempotencyKey: '',
-  attemptVersion: ''
+  attemptVersion: '',
+  // 发货来源：custom=自定义输入 / library=货源库选取
+  deliverySource: 'custom',
+  // 货源库发货时的货源 ID
+  sourceId: '',
+  // 触发时机：付款后 / 确认收货后 / 评价后
+  deliveryTiming: 'after_payment'
 })
 
+const deliverySources = ref([])
+const deliverySourcesLoading = ref(false)
+const deliverySourcesLoaded = ref(false)
+
 const columns = [
-  { key: 'orderNo', title: '订单信息' },
-  { key: 'buyer', title: '买家信息' },
+  { key: 'orderNo', title: '订单信息', sortable: true, sortField: 'createdAt' },
+  { key: 'buyer', title: '买家信息', sortable: true, sortField: 'buyerName' },
   { key: 'items', title: '商品信息' },
   { key: 'quantity', title: '数量 / 进度' },
-  { key: 'orderStatus', title: '订单状态' },
+  { key: 'orderStatus', title: '订单状态', sortable: true, sortField: 'orderStatus' },
   { key: 'delivery', title: '发货状态' },
   { key: 'op', title: '操作' }
 ]
@@ -627,6 +684,10 @@ function primeManualForm() {
     manualForm.deliveryMode = order.deliveryMethod === 'manual_card' ? 'card' : 'text'
     manualForm.deliveryContent = order.deliveryContent || ''
     manualForm.quantityRequested = Number(order.quantityRequested ?? order.quantityTotal ?? 1) || 1
+    // 每次切到新订单时重置发货来源与时机
+    manualForm.deliverySource = 'custom'
+    manualForm.sourceId = ''
+    manualForm.deliveryTiming = 'after_payment'
   }
   if (initializeForm || attemptVersion !== manualForm.attemptVersion) {
     if (!initializeForm && attempt) {
@@ -636,6 +697,32 @@ function primeManualForm() {
     }
     manualForm.attemptVersion = attemptVersion
     manualOutcome.value = buildPersistedManualDeliveryOutcome(attempt)
+  }
+}
+
+async function ensureDeliverySourcesLoaded() {
+  if (deliverySourcesLoaded.value || deliverySourcesLoading.value) return
+  deliverySourcesLoading.value = true
+  try {
+    const res = await getDeliverySources({ current: 1, size: 200 })
+    deliverySources.value = recordsOf(res?.data) || []
+    deliverySourcesLoaded.value = true
+  } catch (err) {
+    // 加载失败不阻塞用户操作；下拉框为空时提示无可用货源
+    deliverySources.value = []
+    deliverySourcesLoaded.value = true
+  } finally {
+    deliverySourcesLoading.value = false
+  }
+}
+
+function onDeliverySourceChange() {
+  // 切换发货来源时清空另一方的状态
+  if (manualForm.deliverySource === 'library') {
+    manualForm.deliveryContent = ''
+    ensureDeliverySourcesLoaded()
+  } else {
+    manualForm.sourceId = ''
   }
 }
 
@@ -674,7 +761,15 @@ async function submitManualDelivery() {
     return
   }
   const payload = buildManualDeliveryPayload(manualForm)
-  if (!payload.deliveryContent) {
+  // 货源库发货：必须有 sourceId（内容由后端解析）；自定义发货：必须有 deliveryContent
+  const isLibraryMode = manualForm.deliverySource === 'library'
+  if (isLibraryMode) {
+    if (!payload.sourceId) {
+      clearNotice()
+      error.value = '请选择发货货源'
+      return
+    }
+  } else if (!payload.deliveryContent) {
     clearNotice()
     error.value = '请先填写发货内容'
     return
@@ -825,11 +920,26 @@ function search() {
   loadOrders()
 }
 
+function onSortHeaderClick(column) {
+  if (!column?.sortField) return
+  if (query.sortField === column.sortField) {
+    // 同列切换方向；当前为 desc 则改 asc，asc 再点则回到 desc（保留默认排序，不取消）
+    query.sortOrder = query.sortOrder === 'asc' ? 'desc' : 'asc'
+  } else {
+    query.sortField = column.sortField
+    query.sortOrder = 'asc'
+  }
+  query.current = 1
+  loadOrders()
+}
+
 function resetFilters() {
   query.accountId = ''
   query.status = ''
   query.keyword = ''
   query.current = 1
+  query.sortField = 'createdAt'
+  query.sortOrder = 'desc'
   selected.value = null
   manualForm.visible = false
   selectedKeys.value = []
@@ -1730,6 +1840,45 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+/* 发货来源切换按钮组 */
+.source-toggle {
+  display: inline-flex;
+  border: 1px solid #d9e2f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f8fafc;
+}
+.source-toggle-btn {
+  border: 0;
+  background: transparent;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.source-toggle-btn:hover:not(:disabled):not(.active) {
+  background: #f0f6ff;
+  color: var(--primary);
+}
+.source-toggle-btn.active {
+  background: var(--primary, #2563eb);
+  color: #fff;
+  font-weight: 500;
+}
+.source-toggle-btn:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.source-empty-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.6;
+  margin-top: 2px;
 }
 
 .textarea {

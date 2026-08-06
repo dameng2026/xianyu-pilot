@@ -70,3 +70,14 @@ export function getAccountStrategyConfig(id) {
 export function saveAccountStrategyConfig(id, data) {
   return request({ url: `/xianyu/accounts/${id}/strategy-config`, method: 'put', data })
 }
+
+export function setAccountMembership(accountId, data) {
+  return request({
+    url: `/xianyu/accounts/${accountId}/membership`,
+    method: 'put',
+    data,
+  })
+}
+export function getAccountMembership(accountId) {
+  return request({ url: `/xianyu/accounts/${accountId}/membership`, method: 'get' })
+}

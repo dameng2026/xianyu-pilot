@@ -132,7 +132,10 @@ services:
       - internal_api_token
     tmpfs:
       - /tmp:rw,nosuid,size=512m,mode=1777
-    shm_size: ${CRAWLER_SHM_SIZE:-512m}
+    # Chromium 在容器内运行时使用 /dev/shm 作为共享内存。
+    # 默认 64m 会导致页面渲染崩溃（"Target closed" / "Session deleted"），
+    # 至少需要 1GB；2GB 可稳定支撑滑块求解 + 标签页交互。
+    shm_size: ${CRAWLER_SHM_SIZE:-2g}
     networks:
       application:
         ipv4_address: 172.30.240.30

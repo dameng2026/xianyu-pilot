@@ -43,7 +43,11 @@ export function manualDeliverOrder(id, data) {
     deliveryMode: data?.deliveryMode,
     deliveryContent: data?.deliveryContent,
     quantityRequested: data?.quantityRequested,
-    idempotencyKey: data?.idempotencyKey
+    idempotencyKey: data?.idempotencyKey,
+    deliveryTiming: data?.deliveryTiming || 'after_payment'
+  }
+  if (data?.sourceId) {
+    payload.sourceId = Number(data.sourceId)
   }
   return request({
     url: `/orders/${id}/manual-delivery`,

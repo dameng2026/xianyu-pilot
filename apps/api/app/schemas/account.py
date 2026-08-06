@@ -82,6 +82,10 @@ class AccountProfileDTO(CamelModel):
     login_status_message: Optional[str] = None
     login_check_time: Optional[str] = None
     auth_usable: Optional[bool] = None
+    # 会员等级字段（restful_get_accounts / restful_get_account_detail 从 xianyu_account_membership JOIN 填充）
+    membership_level: Optional[str] = None
+    membership_expired_time: Optional[str] = None
+    membership_status: Optional[int] = None
 
 
 class GetAccountListRespDTO(CamelModel):

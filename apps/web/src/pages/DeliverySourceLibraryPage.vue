@@ -112,79 +112,156 @@
       </template>
     </CardPanel>
 
-    <CardPanel v-if="editing" :title="editing.id ? '编辑货源' : '新增货源'" style="margin-top:16px">
-      <div class="form-grid">
-        <div class="form-row">
-          <label>标题</label>
-          <input v-model="form.title" class="input" maxlength="200" placeholder="给用户和 AI 模型看的标题" />
-        </div>
-        <div class="form-row">
-          <label>
-            正文
-            <button
-              v-if="form.deliveryMode === 'card'"
-              type="button"
-              class="placeholder-btn"
-              @click="insertCardPlaceholder"
-            >+ 插入 {卡密占位}</button>
-          </label>
-          <textarea
-            ref="contentTextareaRef"
-            v-model="form.content"
-            rows="6"
-            :placeholder="form.deliveryMode === 'card' ? '实际发货文本，需包含 {卡密占位}，发货时会自动替换为认领到的卡密' : '实际发货文本内容'"
-          ></textarea>
-        </div>
-        <div class="form-row">
-          <label>备注</label>
-          <textarea v-model="form.remark" rows="3" maxlength="500" placeholder="可选备注"></textarea>
-        </div>
-        <div class="form-row">
-          <label>发货类型</label>
-          <div class="mode-cards">
-            <label class="mode-card" :class="{ active: form.deliveryMode === 'text' }">
-              <input v-model="form.deliveryMode" type="radio" value="text" @change="onDeliveryModeChange" />
-              <span class="mode-card-radio"></span>
-              <div class="mode-card-body">
-                <span class="mode-card-title">文本发送</span>
-                <span class="mode-card-desc">通过文本消息发送给买家，适合固定文案内容</span>
-              </div>
+    <CardPanel v-if="editing" :title="editing.id ? '编辑货源' : '新增货源'" style="margin-top:16px" class="source-editor-panel">
+      <div class="editor-layout">
+        <div class="editor-left">
+          <div class="form-field">
+            <label class="field-label"><span class="required">*</span>标题</label>
+            <div class="field-input-wrap">
+              <input v-model="form.title" class="field-input" maxlength="200" placeholder="给用户和 AI 模型看的标题" />
+              <span class="char-count">{{ (form.title || '').length }}/200</span>
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label class="field-label">
+              <span class="required">*</span>正文
+              <button
+                v-if="form.deliveryMode === 'card'"
+                type="button"
+                class="placeholder-btn"
+                @click="insertCardPlaceholder"
+              >+ 插入 {卡密占位}</button>
             </label>
-            <label class="mode-card" :class="{ active: form.deliveryMode === 'card' }">
-              <input v-model="form.deliveryMode" type="radio" value="card" @change="onDeliveryModeChange" />
-              <span class="mode-card-radio"></span>
-              <div class="mode-card-body">
-                <span class="mode-card-title">卡密发送</span>
-                <span class="mode-card-desc">从卡密库中选择一张卡密替换占位符后发送</span>
-              </div>
+            <div class="field-input-wrap">
+              <textarea
+                ref="contentTextareaRef"
+                v-model="form.content"
+                rows="6"
+                class="field-textarea"
+                :placeholder="form.deliveryMode === 'card' ? '实际发货文本，需包含 {卡密占位}，发货时会自动替换为认领到的卡密' : '实际发货文本内容'"
+                maxlength="5000"
+              ></textarea>
+              <span class="char-count">{{ (form.content || '').length }}/5000</span>
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label class="field-label">备注（选填）</label>
+            <div class="field-input-wrap">
+              <textarea v-model="form.remark" rows="3" class="field-textarea" maxlength="500" placeholder="可选备注"></textarea>
+              <span class="char-count">{{ (form.remark || '').length }}/500</span>
+            </div>
+          </div>
+
+          <div v-if="form.deliveryMode === 'text'" class="form-field">
+            <label class="field-label">
+              多条正文（可选）
+              <button type="button" class="placeholder-btn" :disabled="form.segments.length >= 20" @click="addSegment('text')">+ 添加正文段</button>
             </label>
+            <div class="segments-editor">
+              <div v-if="form.segments.length === 0" class="segments-empty">
+                未配置多条正文，将使用上方"正文"字段单条发送。添加多条正文后，发货时将按顺序逐条发送（支持文本+图片混合）。
+              </div>
+              <div v-for="(seg, idx) in form.segments" :key="seg._uid ?? idx" class="segment-card">
+                <div class="segment-header">
+                  <span class="segment-index">第 {{ idx + 1 }} 条</span>
+                  <div class="segment-type-switch">
+                    <button type="button" :class="['segment-type-btn', { active: seg.type === 'text' }]" @click="setSegmentType(idx, 'text')">文本</button>
+                    <button type="button" :class="['segment-type-btn', { active: seg.type === 'image' }]" @click="setSegmentType(idx, 'image')">图片</button>
+                  </div>
+                  <button type="button" class="segment-remove-btn" :disabled="form.segments.length <= 1" @click="removeSegment(idx)">删除</button>
+                </div>
+                <div class="segment-body">
+                  <div v-if="seg.type === 'text'" class="segment-text-area">
+                    <textarea
+                      v-model="seg.content"
+                      rows="3"
+                      maxlength="5000"
+                      class="field-textarea"
+                      placeholder="文本内容（发货时逐条发送）"
+                    ></textarea>
+                    <span class="char-count">{{ (seg.content || '').length }}/5000</span>
+                  </div>
+                  <div v-else class="segment-image-row">
+                    <input
+                      v-model="seg.imageUrl"
+                      class="field-input segment-image-url"
+                      placeholder="图片 URL（http:// 或 https://）"
+                    />
+                    <button type="button" class="placeholder-btn" @click="triggerSegmentImageUpload(idx)">上传图片</button>
+                    <input
+                      :ref="el => setSegmentFileInput(el, idx)"
+                      type="file"
+                      accept="image/jpeg,image/png,image/gif,image/webp"
+                      style="display:none"
+                      @change="onSegmentImageSelect($event, idx)"
+                    />
+                  </div>
+                  <div v-if="seg.type === 'image' && seg.imageUrl" class="segment-image-preview">
+                    <img :src="seg.imageUrl" alt="" style="max-width:120px;max-height:80px;border-radius:6px" />
+                  </div>
+                </div>
+              </div>
+              <div class="segments-tip">
+                每条正文为"纯文本"或"单张图片"二选一；如需同时发送文本和图片，请分两条配置。最多 20 条、每条 5000 字符。
+              </div>
+            </div>
           </div>
         </div>
-        <div v-if="form.deliveryMode === 'card'" class="form-row">
-          <label>卡密分组</label>
-          <select v-model="form.cardGroupId" class="input">
-            <option value="" disabled>请选择卡密分组</option>
-            <option v-for="g in cardGroups" :key="g.id" :value="g.id">
-              {{ g.groupName }}（剩余 {{ g.remainCount ?? 0 }} / 共 {{ g.totalCount ?? 0 }}）
-            </option>
-          </select>
-          <div v-if="cardGroupsLoading" class="subtle" style="margin-top:8px;font-size:13px">加载中…</div>
-          <div v-else-if="cardGroups.length === 0" class="subtle danger-text" style="margin-top:8px;font-size:13px">
-            暂无卡密分组，请先到「卡密仓库」创建分组并导入卡密
-          </div>
-          <div v-else-if="selectedCardGroup" class="stock-display" style="margin-top:10px">
-            <span class="stock-label-text">当前剩余：</span>
-            <span :class="['stock-value-text', { low: selectedCardRemainCount <= 0 }]">
-              {{ selectedCardRemainCount }} 张
-            </span>
+
+        <div class="editor-right">
+          <div class="setting-card">
+            <div class="setting-card-title">发送类型</div>
+            <div class="mode-cards">
+              <label class="mode-card" :class="{ active: form.deliveryMode === 'text' }">
+                <input v-model="form.deliveryMode" type="radio" value="text" @change="onDeliveryModeChange" />
+                <span class="mode-card-radio"></span>
+                <div class="mode-card-body">
+                  <span class="mode-card-title">文本发送</span>
+                  <span class="mode-card-desc">通过文本消息发送给买家，适合固定文案内容</span>
+                </div>
+              </label>
+              <label class="mode-card" :class="{ active: form.deliveryMode === 'card' }">
+                <input v-model="form.deliveryMode" type="radio" value="card" @change="onDeliveryModeChange" />
+                <span class="mode-card-radio"></span>
+                <div class="mode-card-body">
+                  <span class="mode-card-title">卡密发送</span>
+                  <span class="mode-card-desc">从卡密库中选择一张卡密替换占位符后发送</span>
+                </div>
+              </label>
+            </div>
+            <div class="info-tip">
+              <span class="info-tip-icon">i</span>
+              <span>提示：卡密发送将在发送时自动替换占位符，例如 <code>{卡密}</code>、<code>{激活码}</code> 等占位符内容。</span>
+            </div>
+            <div v-if="form.deliveryMode === 'card'" class="card-group-select">
+              <select v-model="form.cardGroupId" class="field-input">
+                <option value="" disabled>请选择卡密分组</option>
+                <option v-for="g in cardGroups" :key="g.id" :value="g.id">
+                  {{ g.groupName }}（剩余 {{ g.remainCount ?? 0 }} / 共 {{ g.totalCount ?? 0 }}）
+                </option>
+              </select>
+              <div v-if="cardGroupsLoading" class="subtle" style="margin-top:8px;font-size:13px">加载中…</div>
+              <div v-else-if="cardGroups.length === 0" class="subtle danger-text" style="margin-top:8px;font-size:13px">
+                暂无卡密分组，请先到「卡密仓库」创建分组并导入卡密
+              </div>
+              <div v-else-if="selectedCardGroup" class="stock-display" style="margin-top:10px">
+                <span class="stock-label-text">当前剩余：</span>
+                <span :class="['stock-value-text', { low: selectedCardRemainCount <= 0 }]">
+                  {{ selectedCardRemainCount }} 张
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-      <div class="toolbar" style="justify-content:flex-start">
-        <AppButton type="primary" :disabled="sourcesAvailable !== true || Boolean(mutationBusy)" @click="saveSource">{{ mutationBusy === 'save' ? '保存中…' : '保存' }}</AppButton>
-        <AppButton :disabled="mutationBusy === 'save'" @click="cancelEdit">取消</AppButton>
+      <div class="form-actions">
+        <AppButton type="primary" class="save-btn" :disabled="sourcesAvailable !== true || Boolean(mutationBusy)" @click="saveSource">{{ mutationBusy === 'save' ? '保存中…' : '保存' }}</AppButton>
+        <AppButton class="cancel-btn" :disabled="mutationBusy === 'save'" @click="cancelEdit">取消</AppButton>
       </div>
     </CardPanel>
+
 
     <template v-if="selected">
       <CardPanel title="货源详情" style="margin-top:16px">
@@ -380,6 +457,7 @@ import {
 } from '../api/autoDelivery.js'
 import { getAiProviderStatus } from '../api/aiProvider.js'
 import { getCards } from '../api/cards.js'
+import { uploadImage } from '../api/misc.js'
 import { recordsOf, totalOf } from '../utils/apiData.js'
 import { confirmAction } from '../utils/confirmAction.js'
 import { accountName } from '../utils/format.js'
@@ -444,7 +522,8 @@ const form = reactive({
   content: '',
   remark: '',
   deliveryMode: 'text',
-  cardGroupId: ''
+  cardGroupId: '',
+  segments: []
 })
 
 const columns = [
@@ -689,7 +768,8 @@ function openCreate() {
     content: '',
     remark: '',
     deliveryMode: 'text',
-    cardGroupId: ''
+    cardGroupId: '',
+    segments: [makeSegment('text')]
   })
   ensureCardGroupsLoaded()
 }
@@ -702,8 +782,14 @@ function editSource(row) {
     content: row.content || '',
     remark: row.remark || '',
     deliveryMode: row.deliveryMode === 'card' ? 'card' : 'text',
-    cardGroupId: row.cardGroupId ?? ''
+    cardGroupId: row.cardGroupId ?? '',
+    segments: Array.isArray(row.segments) ? row.segments.map(s => ({
+      ...s,
+      _uid: (segmentUidSeq += 1)
+    })) : []
   })
+  // 旧数据只有 content 没有 segments 时，回填为第一条文本段
+  ensureSegmentsInitialized()
   ensureCardGroupsLoaded()
 }
 
@@ -784,6 +870,77 @@ function clearSelected() {
   })
 }
 
+let segmentUidSeq = 0
+function makeSegment(type = 'text') {
+  segmentUidSeq += 1
+  return { _uid: segmentUidSeq, type, content: '', imageUrl: '', assetId: null }
+}
+
+function addSegment(type = 'text') {
+  if (form.segments.length >= 20) {
+    error.value = '正文条数最多支持 20 条'
+    return
+  }
+  form.segments.push(makeSegment(type))
+}
+
+function setSegmentType(idx, type) {
+  const seg = form.segments[idx]
+  if (!seg || seg.type === type) return
+  seg.type = type
+  // 切换类型时清空另一字段，强制二选一互斥
+  if (type === 'text') {
+    seg.imageUrl = ''
+    seg.assetId = null
+  } else {
+    seg.content = ''
+  }
+}
+
+function ensureSegmentsInitialized() {
+  if (!Array.isArray(form.segments) || form.segments.length === 0) {
+    // 编辑单条 content 的旧数据时自动回填为第一条 segment（向后兼容）
+    const first = makeSegment('text')
+    first.content = form.content || ''
+    form.segments = [first]
+  }
+}
+
+function removeSegment(idx) {
+  if (form.segments.length <= 1) return
+  form.segments.splice(idx, 1)
+}
+
+const segmentFileInputs = {}
+function setSegmentFileInput(el, idx) {
+  if (el) segmentFileInputs[idx] = el
+}
+
+function triggerSegmentImageUpload(idx) {
+  const input = segmentFileInputs[idx]
+  if (input) input.click()
+}
+
+async function onSegmentImageSelect(event, idx) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  try {
+    // 货源库为租户级资源，accountId=0 表示图片存到租户共享空间（后端跳过账号归属校验）
+    const res = await uploadImage(0, file)
+    const data = res?.data || {}
+    const url = data?.url || data?.imageUrl || res?.url || res?.imageUrl
+    if (typeof url === 'string' && url) {
+      form.segments[idx].imageUrl = url
+    } else {
+      throw new Error('上传响应缺少图片 URL')
+    }
+  } catch (e) {
+    error.value = `图片上传失败：${e.message || '请稍后重试'}`
+  } finally {
+    event.target.value = ''
+  }
+}
+
 async function saveSource() {
   if (sourcesAvailable.value !== true || mutationBusy.value) return
   error.value = ''
@@ -802,12 +959,54 @@ async function saveSource() {
   mutationBusy.value = 'save'
   try {
     const editingId = editing.value?.id
+    // 文本发货模式：segments 互斥校验 + 构造清洗后的 segments
+    let cleanedSegments = null
+    if (form.deliveryMode === 'text' && Array.isArray(form.segments) && form.segments.length > 0) {
+      if (form.segments.length > 20) {
+        error.value = '正文条数过多，最多支持 20 条'
+        return
+      }
+      const cleaned = []
+      for (let i = 0; i < form.segments.length; i++) {
+        const seg = form.segments[i]
+        const type = seg.type === 'image' ? 'image' : 'text'
+        const content = (seg.content || '').trim()
+        const imageUrl = (seg.imageUrl || '').trim()
+        if (type === 'image') {
+          if (!imageUrl) {
+            error.value = `第 ${i + 1} 条正文为图片类型，必须上传图片或填写图片 URL`
+            return
+          }
+          if (content) {
+            error.value = `第 ${i + 1} 条正文为图片类型，不能同时填写文本（每条只能文本或图片二选一）`
+            return
+          }
+          cleaned.push({ type: 'image', imageUrl })
+        } else {
+          if (!content) {
+            error.value = `第 ${i + 1} 条正文内容不能为空`
+            return
+          }
+          if (imageUrl) {
+            error.value = `第 ${i + 1} 条正文为文本类型，不能同时上传图片（每条只能文本或图片二选一）`
+            return
+          }
+          if (content.length > 5000) {
+            error.value = `第 ${i + 1} 条正文内容超过 5000 字符`
+            return
+          }
+          cleaned.push({ type: 'text', content })
+        }
+      }
+      cleanedSegments = cleaned
+    }
     const payload = {
       title: form.title,
       content: form.content,
       remark: form.remark,
       deliveryMode: form.deliveryMode,
-      cardGroupId: form.deliveryMode === 'card' ? form.cardGroupId : null
+      cardGroupId: form.deliveryMode === 'card' ? form.cardGroupId : null,
+      segments: cleanedSegments
     }
     if (editingId) {
       await updateDeliverySource(editingId, payload)
@@ -1558,4 +1757,391 @@ onBeforeUnmount(() => {
     line-height: 1.5;
   }
 }
+
+/* ===== 新增货源 / 编辑货源 编辑器视觉（对齐商业版） ===== */
+.editor-layout {
+  display: grid;
+  grid-template-columns: 1fr 420px;
+  gap: 40px;
+}
+
+.editor-left {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+}
+
+.editor-right {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a2236;
+}
+
+.required {
+  color: #ef4444;
+  margin-right: 4px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.field-input-wrap {
+  position: relative;
+}
+
+.field-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 14px;
+  padding-right: 56px;
+  border: 1px solid #e2e6ed;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  color: #334155;
+  transition: border-color .15s, box-shadow .15s;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.field-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, .1);
+}
+
+.field-input::placeholder {
+  color: #b0b7c3;
+}
+
+select.field-input {
+  padding-right: 40px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%2394a3b8' viewBox='0 0 16 16'%3E%3Cpath d='M4.5 6l3.5 3.5L11.5 6' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  cursor: pointer;
+}
+
+.field-textarea {
+  width: 100%;
+  padding: 12px 14px;
+  padding-right: 60px;
+  padding-bottom: 28px;
+  border: 1px solid #e2e6ed;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 14px;
+  color: #334155;
+  line-height: 1.7;
+  resize: vertical;
+  min-height: 160px;
+  transition: border-color .15s, box-shadow .15s;
+  box-sizing: border-box;
+  outline: none;
+  font-family: inherit;
+}
+
+.field-textarea:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, .1);
+}
+
+.field-textarea::placeholder {
+  color: #b0b7c3;
+}
+
+.char-count {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  font-size: 12px;
+  color: #b0b7c3;
+  pointer-events: none;
+}
+
+/* segments 编辑器（多条正文 + 图片发货） */
+.segments-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.segments-empty {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px dashed #e2e6ed;
+  border-radius: 10px;
+  line-height: 1.6;
+}
+
+.segment-card {
+  border: 1px solid #e2e6ed;
+  border-radius: 12px;
+  background: #fafbfc;
+  padding: 14px 16px 12px;
+  transition: border-color .2s, box-shadow .2s;
+}
+
+.segment-card:hover {
+  border-color: #c5cee0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .04);
+}
+
+.segment-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.segment-index {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.segment-type-switch {
+  display: inline-flex;
+  border: 1px solid #d8deeb;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.segment-type-btn {
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background .2s, color .2s;
+}
+
+.segment-type-btn.active {
+  background: #0d6bff;
+  color: #fff;
+}
+
+.segment-type-btn:not(.active):hover {
+  background: #f1f5f9;
+  color: #1a2236;
+}
+
+.segment-remove-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #dc2626;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .2s;
+}
+
+.segment-remove-btn:hover:not(:disabled) {
+  background: rgba(220, 38, 38, .08);
+  border-color: rgba(220, 38, 38, .2);
+}
+
+.segment-remove-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.segment-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.segment-text-area {
+  position: relative;
+}
+
+.segment-text-area .field-textarea {
+  background: #fff;
+}
+
+.segment-image-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.segment-image-url {
+  flex: 1;
+  min-width: 200px;
+}
+
+.segment-image-preview {
+  margin-top: 6px;
+}
+
+.add-segment-btn {
+  align-self: flex-start;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #0d6bff;
+  background: rgba(13, 107, 255, .04);
+  border: 1px dashed #0d6bff;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background .2s, color .2s, border-color .2s;
+}
+
+.add-segment-btn:hover {
+  background: #0d6bff;
+  color: #fff;
+  border-style: solid;
+}
+
+.segments-tip {
+  margin-top: 4px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #64748b;
+  background: rgba(13, 107, 255, .04);
+  border-radius: 8px;
+  line-height: 1.5;
+}
+
+.setting-card {
+  border: 1px solid #e2e6ed;
+  border-radius: 12px;
+  padding: 20px 22px;
+  background: #fff;
+}
+
+.setting-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a2236;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.info-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #f0f5ff;
+  border: 1px solid #dbeafe;
+  color: #2563eb;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.info-tip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: #fff;
+  font-weight: 700;
+  font-size: 11px;
+  font-style: normal;
+  flex-shrink: 0;
+  margin-top: 2px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.info-tip code {
+  padding: 1px 5px;
+  background: #dbeafe;
+  border-radius: 4px;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 1px;
+}
+
+.card-group-select {
+  margin-top: 14px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 0;
+}
+
+.save-btn:deep(.app-btn) {
+  min-width: 110px !important;
+  height: 44px !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  font-size: 15px !important;
+  background: #2563eb !important;
+  color: #fff !important;
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, .28) !important;
+  padding: 0 24px !important;
+  transition: all .15s !important;
+}
+
+.save-btn:deep(.app-btn:hover) {
+  background: #1d4ed8 !important;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, .35) !important;
+}
+
+.cancel-btn:deep(.app-btn) {
+  min-width: 100px !important;
+  height: 44px !important;
+  border-radius: 10px !important;
+  font-weight: 500 !important;
+  font-size: 15px !important;
+  border: 1px solid #d1d5db !important;
+  background: #fff !important;
+  color: #4b5563 !important;
+  padding: 0 24px !important;
+  box-shadow: none !important;
+  transition: all .15s !important;
+}
+
+.cancel-btn:deep(.app-btn:hover) {
+  border-color: #9ca3af !important;
+  background: #f9fafb !important;
+  color: #374151 !important;
+}
+
+@media (max-width: 900px) {
+  .editor-layout {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+}
+
 </style>

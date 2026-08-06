@@ -1735,12 +1735,31 @@ async def goods_sku_list(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Retired: the persistence model has no SKU variants."""
-    del data, db, current_user
-    raise HTTPException(
-        status_code=410,
-        detail="当前版本没有 SKU 变体模型；请使用 GET /api/goods/{goods_id} 查询商品主记录。",
-    )
+    """查询商品的 SKU 列表（多规格发货功能）。
+
+    请求体: {"goodsId": <xianyu_goods.id>}
+    返回: SKU 列表，每条含 skuId / propertyKey / propertyText / price / stock
+    """
+    del current_user
+    goods_id = _parse_positive_int(data.get("goodsId"))
+    if not goods_id:
+        raise HTTPException(status_code=422, detail="goodsId 不能为空且必须为正整数。")
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT id, goods_id, sku_id, property_key, property_list_json,
+                       price, stock
+                FROM xianyu_goods_sku
+                WHERE goods_id = :goods_id
+                ORDER BY id ASC
+                """
+            ),
+            {"goods_id": goods_id},
+        )
+    ).mappings().all()
+    items = [_serialize_sku_row(row) for row in rows]
+    return ResultObject.success(items)
 
 
 @goods_sku_router.post("/detail")
@@ -1749,12 +1768,205 @@ async def goods_sku_detail(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Retired: the persistence model has no SKU variants."""
-    del data, db, current_user
-    raise HTTPException(
-        status_code=410,
-        detail="当前版本没有 SKU 变体模型；请使用 GET /api/goods/{goods_id} 查询商品主记录。",
-    )
+    """查询单个 SKU 详情（含规格属性）。
+
+    请求体: {"goodsId": <id>, "skuId": "<闲鱼SKU ID>"}
+    """
+    del current_user
+    goods_id = _parse_positive_int(data.get("goodsId"))
+    sku_id = str(data.get("skuId") or "").strip()
+    if not goods_id or not sku_id:
+        raise HTTPException(status_code=422, detail="goodsId 和 skuId 不能为空。")
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT id, goods_id, sku_id, property_key, property_list_json,
+                       price, stock
+                FROM xianyu_goods_sku
+                WHERE goods_id = :goods_id AND sku_id = :sku_id
+                LIMIT 1
+                """
+            ),
+            {"goods_id": goods_id, "sku_id": sku_id},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="未找到对应的 SKU 记录。")
+    return ResultObject.success(_serialize_sku_row(dict(row)))
+
+
+@goods_sku_router.get("/rules")
+async def goods_sku_rules_get(
+    goodsId: int = Query(..., gt=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """读取商品的 SKU 发货规则（存储在 delivery_goods_config.config_json 的 skuRules 字段）。"""
+    del current_user
+    rules = await _load_sku_rules(db, goodsId)
+    return ResultObject.success(rules)
+
+
+@goods_sku_router.put("/rules")
+async def goods_sku_rules_put(
+    data: dict = {},
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """保存商品的 SKU 发货规则到 delivery_goods_config.config_json 的 skuRules 字段。
+
+    请求体: {"goodsId": <id>, "rules": [<skuRule>, ...]}
+    每个 skuRule 含 skuId / propertyKey / propertyText 及
+    payDelivery / confirmDelivery / reviewDelivery 三个 timing 配置。
+    """
+    del current_user
+    goods_id = _parse_positive_int(data.get("goodsId"))
+    if not goods_id:
+        raise HTTPException(status_code=422, detail="goodsId 不能为空且必须为正整数。")
+    rules = data.get("rules")
+    if not isinstance(rules, list):
+        raise HTTPException(status_code=422, detail="rules 必须是数组。")
+    if len(rules) > 500:
+        raise HTTPException(status_code=422, detail="SKU 规则数量超过上限（500）。")
+    saved = await _save_sku_rules(db, goods_id, rules)
+    return ResultObject.success({"saved": saved, "goodsId": goods_id})
+
+
+def _parse_positive_int(value: object) -> Optional[int]:
+    try:
+        result = int(value) if value not in (None, "") else None
+        return result if result and result > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _serialize_sku_row(row: dict) -> dict:
+    property_list_json = row.get("property_list_json")
+    property_list = []
+    if isinstance(property_list_json, str) and property_list_json.strip():
+        try:
+            parsed = json.loads(property_list_json)
+            if isinstance(parsed, list):
+                property_list = parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    elif isinstance(property_list_json, list):
+        property_list = property_list_json
+    property_text = _build_property_text(property_list)
+    price = row.get("price")
+    return {
+        "id": row.get("id"),
+        "goodsId": row.get("goods_id"),
+        "skuId": str(row.get("sku_id") or ""),
+        "propertyKey": str(row.get("property_key") or ""),
+        "propertyText": property_text,
+        "price": str(price) if price is not None else None,
+        "stock": row.get("stock"),
+    }
+
+
+def _build_property_text(property_list: list) -> str:
+    """从属性列表生成人类可读的规格文本，例如 颜色:红;尺码:S。"""
+    if not isinstance(property_list, list) or not property_list:
+        return ""
+    parts = []
+    for item in property_list:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("propertyName") or item.get("propertyText") or "").strip()
+        value = str(item.get("value") or item.get("valueName") or item.get("valueText") or "").strip()
+        if name and value:
+            parts.append(f"{name}:{value}")
+        elif value:
+            parts.append(value)
+    return ";".join(parts)
+
+
+async def _load_sku_rules(db: AsyncSession, goods_id: int) -> list:
+    """从 delivery_goods_config.config_json 读取 skuRules 字段。"""
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT config_json
+                FROM delivery_goods_config
+                WHERE goods_id = :goods_id AND deleted = 0
+                LIMIT 1
+                """
+            ),
+            {"goods_id": goods_id},
+        )
+    ).mappings().first()
+    if not row:
+        return []
+    config = _parse_config_json(row.get("config_json"))
+    rules = config.get("skuRules")
+    return rules if isinstance(rules, list) else []
+
+
+async def _save_sku_rules(db: AsyncSession, goods_id: int, rules: list) -> int:
+    """将 skuRules 保存到 delivery_goods_config.config_json（upsert）。
+
+    保留 config_json 中的其他字段（payDelivery / confirmDelivery / reviewDelivery 等），
+    仅覆盖 skuRules 字段。
+    """
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT id, config_json
+                FROM delivery_goods_config
+                WHERE goods_id = :goods_id
+                LIMIT 1
+                """
+            ),
+            {"goods_id": goods_id},
+        )
+    ).mappings().first()
+    if row:
+        config = _parse_config_json(row.get("config_json"))
+        config["skuRules"] = rules
+        await db.execute(
+            text(
+                """
+                UPDATE delivery_goods_config
+                SET config_json = :config_json, updated_time = NOW(), deleted = 0
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": row.get("id"),
+                "config_json": json.dumps(config, ensure_ascii=False),
+            },
+        )
+    else:
+        config = {"skuRules": rules}
+        await db.execute(
+            text(
+                """
+                INSERT INTO delivery_goods_config(goods_id, config_json, created_time, updated_time, deleted)
+                VALUES(:goods_id, :config_json, NOW(), NOW(), 0)
+                """
+            ),
+            {
+                "goods_id": goods_id,
+                "config_json": json.dumps(config, ensure_ascii=False),
+            },
+        )
+    return len(rules)
+
+
+def _parse_config_json(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        loaded = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 # ---- 数据面板 ----
@@ -1990,7 +2202,8 @@ async def media_delete(
 
 @image_router.post("/upload")
 async def image_upload(
-    accountId: int = Form(..., gt=0),
+    # accountId=0 表示租户共享空间（货源库图片段等场景），跳过账号归属校验
+    accountId: int = Form(..., ge=0),
     file: UploadFile = File(...),
     current_user: dict = Depends(get_current_user)
 ):

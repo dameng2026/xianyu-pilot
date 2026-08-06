@@ -263,6 +263,21 @@ def _build_source_stock_label(row: dict[str, Any], delivery_mode: str) -> str:
     return f"{group_name} · 剩余 {remain}" if group_name else f"剩余 {remain}"
 
 
+def _parse_segments_from_row(raw: Any) -> list[dict[str, Any]]:
+    """从数据库行解析 segments 字段（JSON 字符串或已解析的 list）。"""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return []
+
+
 def _source_record(row: dict[str, Any], usage_count: int) -> dict[str, Any]:
     delivery_mode = _normalize_source_delivery_mode(row.get("delivery_mode"))
     card_group_id_raw = row.get("card_group_id")
@@ -281,6 +296,7 @@ def _source_record(row: dict[str, Any], usage_count: int) -> dict[str, Any]:
         "cardRemainCount": _to_int(row.get("card_remain_count") or row.get("cardRemainCount")),
         "usageCount": usage_count,
         "stockLabel": _build_source_stock_label(row, delivery_mode),
+        "segments": _parse_segments_from_row(row.get("segments")),
         "createdTime": _format_datetime(row.get("created_time")),
         "updatedTime": _format_datetime(row.get("updated_time")),
     }
@@ -922,6 +938,7 @@ async def _load_delivery_source_row(
                 f"""
                 SELECT s.id, s.title, s.content, s.remark,
                        s.source_type, s.delivery_mode, s.card_group_id,
+                       s.segments,
                        s.created_time, s.updated_time,
                        g.group_name AS card_group_name,
                        g.available_count AS card_remain_count
@@ -950,6 +967,56 @@ def _positive_source_id(value: Any) -> int:
     return source_id
 
 
+def _normalize_segments(raw: Any) -> list[dict]:
+    """规范化 segments 字段为 list[dict]。
+    兼容三种输入：
+      - List[Dict]（来自 config_json 解析后的 Python 对象）
+      - JSON 字符串（来自 delivery_text_source.segments 列）
+      - None / 空值
+    校验：每个 segment 必须含 type ∈ {text, image}，且 text/image 互斥。
+    返回空 list 表示无 segments（执行端回退到单条 content 发送）。
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        if not raw.strip():
+            return []
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("segments JSON 解析失败，回退到单条发送: raw=%s", raw[:200])
+            return []
+    if not isinstance(raw, list) or not raw:
+        return []
+    result: list[dict] = []
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        seg_type = str(item.get("type") or "text").strip().lower()
+        if seg_type not in ("text", "image"):
+            logger.warning("segments[%d] type 无效: %s，跳过", idx, seg_type)
+            continue
+        if seg_type == "image":
+            url = str(item.get("imageUrl") or "").strip()
+            if not url:
+                logger.warning("segments[%d] image 类型但 imageUrl 为空，跳过", idx)
+                continue
+            seg = {"type": "image", "imageUrl": url}
+            if item.get("assetId") is not None:
+                try:
+                    seg["assetId"] = int(item.get("assetId"))
+                except (TypeError, ValueError):
+                    pass
+            result.append(seg)
+        else:
+            text_content = str(item.get("content") or "").strip()
+            if not text_content:
+                logger.warning("segments[%d] text 类型但 content 为空，跳过", idx)
+                continue
+            result.append({"type": "text", "content": text_content})
+    return result
+
+
 def _delivery_source_fields(body: dict[str, Any]) -> dict[str, Any]:
     """Validate source fields before MySQL can turn user input into a 500.
 
@@ -966,8 +1033,13 @@ def _delivery_source_fields(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("货源备注最多 500 个字符")
     if len(content.encode("utf-8")) > 65_535:
         raise ValueError("货源正文 UTF-8 编码后不能超过 65535 字节")
-    if not title and not content:
-        raise ValueError("标题和正文至少填写一项")
+    # segments 校验（可选字段，支持多条正文+图片发货）
+    try:
+        segments = _normalize_segments(body.get("segments"))
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+    if not title and not content and not segments:
+        raise ValueError("标题、正文和多条正文至少填写一项")
     delivery_mode = _normalize_source_delivery_mode(body.get("deliveryMode") or body.get("delivery_mode"))
     card_group_id: int | None = None
     if delivery_mode == "card":
@@ -985,6 +1057,7 @@ def _delivery_source_fields(body: dict[str, Any]) -> dict[str, Any]:
         "remark": remark,
         "delivery_mode": delivery_mode,
         "card_group_id": card_group_id,
+        "segments": segments,
     }
 
 
@@ -2465,6 +2538,214 @@ async def preview_delivery_statement(
     return ResultObject.success({"preview": preview})
 
 
+# ============================================================
+# 发货声明会话（卖家手动处理）—— 发货记录页"声明会话"tab 使用
+# ============================================================
+ALLOWED_STATEMENT_SESSION_STATUSES = ("declaring", "waiting", "confirmed", "cancelled")
+BUYER_CANCEL_REPLY_TEXT = "已为您转人工客服，请耐心等待，客服会尽快与您联系处理退款事宜。"
+
+
+def _statement_session_record(row: dict[str, Any]) -> dict[str, Any]:
+    """将 delivery_statement_session 行标准化为前端字段（camelCase）。"""
+    return {
+        "id": _to_int(row.get("id")),
+        "accountId": _to_int(row.get("account_id")),
+        "accountNickname": row.get("account_nickname") or "",
+        "orderId": row.get("order_id") or "",
+        "buyerId": row.get("buyer_id") or "",
+        "buyerNick": row.get("buyer_nick") or "",
+        "xyGoodsId": row.get("xy_goods_id") or "",
+        "goodsTitle": row.get("goods_title") or "",
+        "sId": row.get("s_id") or "",
+        "pnmId": row.get("pnm_id") or "",
+        "statementContent": row.get("statement_content") or "",
+        "status": row.get("status") or "waiting",
+        "confirmSource": row.get("confirm_source") or "",
+        "cancelSource": row.get("cancel_source") or "",
+        "sentAt": _format_datetime(row.get("sent_at")),
+        "confirmedAt": _format_datetime(row.get("confirmed_at")),
+        "cancelledAt": _format_datetime(row.get("cancelled_at")),
+        "createdTime": _format_datetime(row.get("created_time")),
+    }
+
+
+@router.get("/auto-delivery/statement/sessions", response_model=ResultObject)
+async def list_delivery_statement_sessions(
+    status: str = Query(default="", max_length=20),
+    accountId: int = Query(default=0, ge=0),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """分页查询发货声明会话（发货记录页"声明会话"tab）。"""
+    normalized_status = (status or "").strip()
+    if normalized_status and normalized_status not in ALLOWED_STATEMENT_SESSION_STATUSES:
+        return ResultObject.failed("status 仅支持 declaring/waiting/confirmed/cancelled", code=400)
+    safe_page = max(page, 1)
+    safe_size = min(max(size, 1), 100)
+    offset = (safe_page - 1) * safe_size
+
+    params: dict[str, Any] = {}
+    where_sql = ["s.deleted = 0"]
+    if normalized_status:
+        where_sql.append("s.status = :status")
+        params["status"] = normalized_status
+    if accountId > 0:
+        where_sql.append("s.account_id = :account_id")
+        params["account_id"] = accountId
+    # 仅展示仍有效的账号（已退出账号的旧会话不在前台展示）
+    where_sql.append(
+        "EXISTS (SELECT 1 FROM xianyu_account a WHERE a.id = s.account_id AND a.deleted = 0)"
+    )
+
+    total = (
+        await db.execute(
+            text(f"SELECT COUNT(*) FROM delivery_statement_session s WHERE {' AND '.join(where_sql)}"),
+            params,
+        )
+    ).scalar() or 0
+    params.update({"offset": offset, "limit": safe_size})
+    rows = (
+        await db.execute(
+            text(
+                f"""
+                SELECT s.id, s.account_id, s.order_id, s.buyer_id, s.buyer_nick,
+                       s.xy_goods_id, s.goods_title, s.s_id, s.pnm_id,
+                       s.statement_content, s.status, s.confirm_source, s.cancel_source,
+                       s.sent_at, s.confirmed_at, s.cancelled_at, s.created_time, s.updated_time,
+                       a.nickname AS account_nickname
+                FROM delivery_statement_session s
+                LEFT JOIN xianyu_account a ON a.id = s.account_id AND a.deleted = 0
+                WHERE {' AND '.join(where_sql)}
+                ORDER BY s.created_time DESC, s.id DESC
+                LIMIT :offset, :limit
+                """
+            ),
+            params,
+        )
+    ).mappings().all()
+    records = [_statement_session_record(dict(row)) for row in rows]
+    return ResultObject.success(_page_payload(records, _to_int(total), safe_page, safe_size))
+
+
+async def _load_statement_session(db: AsyncSession, session_id: int) -> dict[str, Any] | None:
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT id, account_id, order_id, buyer_id, buyer_nick,
+                       xy_goods_id, goods_title, s_id, pnm_id, statement_content, status
+                FROM delivery_statement_session
+                WHERE id = :session_id AND deleted = 0
+                LIMIT 1
+                """
+            ),
+            {"session_id": session_id},
+        )
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+@router.post("/auto-delivery/statement/sessions/{session_id}/confirm", response_model=ResultObject)
+async def confirm_delivery_statement_session(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """卖家手动确认声明会话 → 触发该订单发货。"""
+    session = await _load_statement_session(db, session_id)
+    if not session:
+        return ResultObject.failed("声明会话不存在或已删除", code=404)
+    if session["status"] != "waiting":
+        return ResultObject.failed("当前会话状态不支持确认（仅等待买家确认状态可操作）", code=409)
+
+    result = await db.execute(
+        text(
+            """
+            UPDATE delivery_statement_session
+            SET status='confirmed', confirmed_at=NOW(), confirm_source='seller',
+                updated_time=NOW()
+            WHERE id=:id AND status='waiting'
+            """
+        ),
+        {"id": session_id},
+    )
+    if result.rowcount == 0:
+        await db.rollback()
+        return ResultObject.failed("会话状态已变更，请刷新后重试", code=409)
+
+    # 触发发货（复用 ws_delivery_handler 的声明确认发货流程，幂等由 event_key 保证）
+    try:
+        from ....services.ws_delivery_handler import _trigger_delivery_for_confirmed_statement
+
+        await _trigger_delivery_for_confirmed_statement(
+            db,
+            _to_int(session["account_id"]),
+            order_id=str(session.get("order_id") or "") or None,
+            xy_goods_id=str(session.get("xy_goods_id") or ""),
+            buyer_user_id=str(session.get("buyer_id") or ""),
+            s_id=str(session.get("s_id") or ""),
+            goods_title=str(session.get("goods_title") or ""),
+            session_id_stmt=session_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "卖家手动确认声明后触发发货失败 sessionId=%d errorType=%s",
+            session_id, type(exc).__name__, exc_info=True,
+        )
+        # 不抛出：会话已 confirmed，发货由 delivery_record 失败重试机制接管
+    await db.commit()
+    return ResultObject.success(None, "已确认会话并触发发货")
+
+
+@router.post("/auto-delivery/statement/sessions/{session_id}/cancel", response_model=ResultObject)
+async def cancel_delivery_statement_session(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+):
+    """卖家手动取消声明会话 → 通知买家 + 不发货。"""
+    session = await _load_statement_session(db, session_id)
+    if not session:
+        return ResultObject.failed("声明会话不存在或已删除", code=404)
+    if session["status"] != "waiting":
+        return ResultObject.failed("当前会话状态不支持取消（仅等待买家确认状态可操作）", code=409)
+
+    result = await db.execute(
+        text(
+            """
+            UPDATE delivery_statement_session
+            SET status='cancelled', cancelled_at=NOW(), cancel_source='seller',
+                updated_time=NOW()
+            WHERE id=:id AND status='waiting'
+            """
+        ),
+        {"id": session_id},
+    )
+    if result.rowcount == 0:
+        await db.rollback()
+        return ResultObject.failed("会话状态已变更，请刷新后重试", code=409)
+
+    # 向买家发送取消提示（失败不影响主流程）
+    try:
+        from ....services.ws_statement_handler import _send_statement_message
+
+        await _send_statement_message(
+            _to_int(session["account_id"]),
+            str(session.get("s_id") or ""),
+            str(session.get("buyer_id") or ""),
+            BUYER_CANCEL_REPLY_TEXT,
+        )
+    except Exception as exc:
+        logger.warning(
+            "卖家取消声明后向买家发送提示失败 sessionId=%d errorType=%s",
+            session_id, type(exc).__name__,
+        )
+    await db.commit()
+    return ResultObject.success(None, "已取消会话并通知买家")
+
+
 @router.get("/auto-delivery/sources", response_model=ResultObject)
 async def get_delivery_sources(
     keyword: str = Query(default="", max_length=200),
@@ -2495,6 +2776,7 @@ async def get_delivery_sources(
                 f"""
                 SELECT s.id, s.title, s.content, s.remark,
                        s.source_type, s.delivery_mode, s.card_group_id,
+                       s.segments,
                        s.created_time, s.updated_time,
                        g.group_name AS card_group_name,
                        g.available_count AS card_remain_count
@@ -2529,7 +2811,7 @@ async def get_delivery_source_detail(
         await db.execute(
             text(
                 """
-                SELECT id, title, content, remark, created_time, updated_time
+                SELECT id, title, content, remark, segments, created_time, updated_time
                 FROM delivery_text_source
                 WHERE id = :source_id
                   AND deleted = 0
@@ -2560,10 +2842,10 @@ async def create_delivery_source(
         text(
             """
             INSERT INTO delivery_text_source(
-                title, content, remark, source_type, delivery_mode, card_group_id,
+                title, content, remark, source_type, delivery_mode, card_group_id, segments,
                 deleted, created_time, updated_time
             )
-            VALUES(:title, :content, :remark, 'text', :delivery_mode, :card_group_id, 0, NOW(), NOW())
+            VALUES(:title, :content, :remark, 'text', :delivery_mode, :card_group_id, :segments, 0, NOW(), NOW())
             """
         ),
         {
@@ -2572,6 +2854,7 @@ async def create_delivery_source(
             "remark": fields["remark"] or None,
             "delivery_mode": fields["delivery_mode"],
             "card_group_id": fields["card_group_id"],
+            "segments": json.dumps(fields["segments"], ensure_ascii=False) if fields.get("segments") else None,
         },
     )
     await db.commit()
@@ -2602,6 +2885,7 @@ async def update_delivery_source(
                 remark = :remark,
                 delivery_mode = :delivery_mode,
                 card_group_id = :card_group_id,
+                segments = :segments,
                 updated_time = NOW()
             WHERE id = :source_id
               AND deleted = 0
@@ -2614,6 +2898,7 @@ async def update_delivery_source(
             "remark": fields["remark"] or None,
             "delivery_mode": fields["delivery_mode"],
             "card_group_id": fields["card_group_id"],
+            "segments": json.dumps(fields["segments"], ensure_ascii=False) if fields.get("segments") else None,
         },
     )
     # MySQL commonly reports rowcount=0 for an idempotent update. Existence was

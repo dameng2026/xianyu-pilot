@@ -292,6 +292,7 @@ async def sync_orders_for_account(
     inserted = 0
     updated = 0
     failed = 0
+    sold_item_ids_to_relist: list = []  # 新售订单对应的商品 ID，用于触发售整自动上架
     page_number = 1
 
     try:
@@ -339,6 +340,10 @@ async def sync_orders_for_account(
                         action, _ = await _upsert_order(db, account_id, parsed)
                         if action == "inserted":
                             inserted += 1
+                            # 新售订单插入成功，记录商品 ID 用于触发售整自动上架钩子
+                            sold_item_id = str(parsed.get("item_id") or "").strip()
+                            if sold_item_id:
+                                sold_item_ids_to_relist.append(sold_item_id)
                         else:
                             updated += 1
                         total_fetched += 1
@@ -367,6 +372,22 @@ async def sync_orders_for_account(
             "订单同步完成: accountId=%d total=%d inserted=%d updated=%d failed=%d",
             account_id, total_fetched, inserted, updated, failed,
         )
+
+        # 售整自动上架钩子：新售订单触发后立即异步重发
+        # 失败不影响订单同步主流程；relist_scheduler 也会每 3 分钟兜底扫描
+        if sold_item_ids_to_relist:
+            try:
+                from .relist_service import relist_sold_item
+                for sold_item_id in sold_item_ids_to_relist:
+                    asyncio.create_task(
+                        relist_sold_item(account_id, sold_item_id),
+                        name=f"relist_hook_{account_id}_{sold_item_id}",
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "触发售整自动上架失败 accountId=%d errorType=%s",
+                    account_id, type(exc).__name__,
+                )
         return {
             "success": True,
             "total": total_fetched,

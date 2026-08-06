@@ -5,6 +5,7 @@ Wraps existing POST-style business logic under RESTful resource paths.
 import asyncio
 import logging
 import re
+from datetime import datetime
 from typing import Any, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +17,7 @@ from ....core.unavailable_features import (
     FACE_VERIFICATION_UNAVAILABLE,
     feature_unavailable,
 )
-from ....models.entities import XianyuAccount, XianyuAccountAuth, XianyuGoods, XianyuTradeOrder, XianyuMessage, Notification
+from ....models.entities import XianyuAccount, XianyuAccountAuth, XianyuAccountMembership, XianyuGoods, XianyuTradeOrder, XianyuMessage, Notification
 from ..deps import get_current_user
 from .account import account_to_dto
 
@@ -162,16 +163,20 @@ async def restful_get_accounts(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        # JOIN auth 表获取 cookie_status
+        # JOIN auth 表获取 cookie_status，JOIN membership 表获取会员等级
         query = select(
             XianyuAccount,
             XianyuAccountAuth.cookie_status,
             XianyuAccountAuth.last_login_status_code,
             XianyuAccountAuth.last_login_status_message,
             XianyuAccountAuth.last_login_check_time,
+            XianyuAccountMembership,
         ).outerjoin(
             XianyuAccountAuth,
             (XianyuAccountAuth.account_id == XianyuAccount.id)
+        ).outerjoin(
+            XianyuAccountMembership,
+            (XianyuAccountMembership.account_id == XianyuAccount.id)
         ).where(
             XianyuAccount.deleted == 0,
         )
@@ -179,8 +184,8 @@ async def restful_get_accounts(
         result = await db.execute(query)
         rows = result.all()
         data = []
-        for account, cookie_status, login_status_code, login_status_message, login_check_time in rows:
-            dto = account_to_dto(account)
+        for account, cookie_status, login_status_code, login_status_message, login_check_time, membership in rows:
+            dto = account_to_dto(account, membership)
             normalized_cookie_status = cookie_status if cookie_status is not None else 0
             # Pydantic 模型用属性赋值；CamelModel 序列化时自动转 camelCase
             dto.cookie_status = normalized_cookie_status
@@ -245,15 +250,21 @@ async def restful_get_account_detail(
 ):
     try:
         result = await db.execute(
-            select(XianyuAccount).where(
+            select(XianyuAccount, XianyuAccountMembership)
+            .outerjoin(
+                XianyuAccountMembership,
+                XianyuAccountMembership.account_id == XianyuAccount.id,
+            )
+            .where(
                 XianyuAccount.id == account_id,
                 XianyuAccount.deleted == 0,
             )
         )
-        account = result.scalar_one_or_none()
-        if not account:
+        row = result.first()
+        if not row:
             return ResultObject.failed("账号不存在")
-        return ResultObject.success(account_to_dto(account))
+        account, membership = row
+        return ResultObject.success(account_to_dto(account, membership))
     except Exception as e:
         logger.error("get account detail error", exc_info=True)
         return ResultObject.internal_error()
@@ -415,11 +426,14 @@ async def restful_refresh_account_profile(
                     if praise_ratio:
                         account.praise_ratio = praise_ratio
                         observed_profile_value = True
-                    fish_shop_score_val = _int_val(shop, "fishShopScore")
+                    # 与商业版对齐：page.head 返回的鱼小铺标识字段为 superShow（兼容旧字段 fishShopUser）
+                    fish_shop_score_val = _int_val(shop, "score")
+                    if fish_shop_score_val is None:
+                        fish_shop_score_val = _int_val(shop, "fishShopScore")
                     if fish_shop_score_val is not None:
                         account.fish_shop_score = fish_shop_score_val
                         observed_profile_value = True
-                    fish_shop_user_val = shop.get("fishShopUser")
+                    fish_shop_user_val = shop.get("superShow", shop.get("fishShopUser"))
                     if fish_shop_user_val is not None:
                         account.fish_shop_user = 1 if fish_shop_user_val else 0
                         observed_profile_value = True
@@ -532,6 +546,127 @@ async def restful_get_account_credential(
     """Retired: credentials are neither consumed nor returned."""
 
     feature_unavailable(ACCOUNT_LOGIN_CREDENTIAL_UNAVAILABLE)
+
+@router.put("/xianyu/accounts/{account_id}/membership", response_model=ResultObject)
+async def restful_set_account_membership(
+    account_id: int,
+    body: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """设置账号会员等级（upsert：存在则更新，不存在则插入）。
+
+    请求体: {"level": "normal|vip|svip", "expiredTime": "2026-12-31 23:59:59" | null}
+    """
+    try:
+        level = (body.get("level") or "normal").strip().lower()
+        if level not in ("normal", "vip", "svip"):
+            return ResultObject.validate_failed("level 必须为 normal/vip/svip")
+
+        expired_time_str = body.get("expiredTime")
+        expired_time = None
+        if expired_time_str:
+            raw = str(expired_time_str).strip()
+            try:
+                expired_time = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                try:
+                    expired_time = datetime.fromisoformat(raw)
+                except ValueError:
+                    return ResultObject.validate_failed("expiredTime 格式应为 YYYY-MM-DD HH:MM:SS")
+
+        # 检查账号是否存在
+        acct_result = await db.execute(
+            select(XianyuAccount).where(
+                XianyuAccount.id == account_id,
+                XianyuAccount.deleted == 0,
+            )
+        )
+        if not acct_result.scalar_one_or_none():
+            return ResultObject.failed("账号不存在")
+
+        # upsert 会员记录
+        result = await db.execute(
+            select(XianyuAccountMembership).where(
+                XianyuAccountMembership.account_id == account_id
+            )
+        )
+        membership = result.scalar_one_or_none()
+        if membership:
+            membership.level = level
+            membership.expired_time = expired_time
+            membership.status = 1
+        else:
+            membership = XianyuAccountMembership(
+                account_id=account_id,
+                level=level,
+                expired_time=expired_time,
+                status=1,
+            )
+            db.add(membership)
+
+        await db.commit()
+        await db.refresh(membership)
+
+        return ResultObject.success({
+            "accountId": account_id,
+            "level": membership.level,
+            "expiredTime": str(membership.expired_time) if membership.expired_time else None,
+            "status": membership.status,
+            "message": "会员等级设置成功",
+        })
+    except Exception as e:
+        logger.error("set account membership error", exc_info=True)
+        return ResultObject.internal_error()
+
+@router.get("/xianyu/accounts/{account_id}/membership", response_model=ResultObject)
+async def restful_get_account_membership(
+    account_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """查询账号会员等级。
+
+    返回: {"accountId": int, "level": "normal|vip|svip", "expiredTime": str|null, "status": int}
+    若账号未设置会员等级，返回 level="normal"。
+    """
+    try:
+        # 检查账号是否存在
+        acct_result = await db.execute(
+            select(XianyuAccount).where(
+                XianyuAccount.id == account_id,
+                XianyuAccount.deleted == 0,
+            )
+        )
+        if not acct_result.scalar_one_or_none():
+            return ResultObject.failed("账号不存在")
+
+        result = await db.execute(
+            select(XianyuAccountMembership).where(
+                XianyuAccountMembership.account_id == account_id
+            )
+        )
+        membership = result.scalar_one_or_none()
+        if not membership:
+            # 未设置会员等级时回退为普通用户
+            return ResultObject.success({
+                "accountId": account_id,
+                "level": "normal",
+                "expiredTime": None,
+                "status": 1,
+                "message": "该账号尚未设置会员等级，默认为普通用户",
+            })
+        return ResultObject.success({
+            "accountId": account_id,
+            "level": membership.level,
+            "expiredTime": str(membership.expired_time) if membership.expired_time else None,
+            "status": membership.status,
+        })
+    except Exception as e:
+        logger.error("查询账号会员等级失败", exc_info=True)
+        return ResultObject.internal_error()
+
+
 # ======================== GOODS  ========================
 
 @router.get("/xianyu/goods", response_model=ResultObject)

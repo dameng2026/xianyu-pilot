@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import datetime
 import logging
 import math
@@ -27,6 +27,21 @@ router = APIRouter(prefix="/order")
 
 # 批量刷新扩展 router（前端 order.js 调用 POST /api/order/batchRefresh，参考项目无实现）
 batch_refresh_router = APIRouter(prefix="/order", tags=["order-batch"])
+
+
+_ORDER_SORT_FIELD_MAP = {
+    "createdAt": XianyuTradeOrder.create_time,
+    "buyerName": XianyuTradeOrder.buyer_name,
+    "orderStatus": XianyuTradeOrder.order_status,
+}
+
+
+def _resolve_order_sort(req: "OrderQueryReqDTO"):
+    """根据请求中的 sort_field / sort_order 构造排序条件，默认 create_time DESC。"""
+    field_name = (req.sort_field or "createdAt").strip()
+    column = _ORDER_SORT_FIELD_MAP.get(field_name, XianyuTradeOrder.create_time)
+    order = (req.sort_order or "desc").strip().lower()
+    return column.asc() if order == "asc" else column.desc()
 
 
 def trade_order_to_vo(order: XianyuTradeOrder) -> OrderVO:
@@ -67,7 +82,7 @@ async def list_orders(
         total = total_result.scalar() or 0
 
         offset = (page_num - 1) * page_size
-        query = query.order_by(XianyuTradeOrder.id.desc()).offset(offset).limit(page_size)
+        query = query.order_by(_resolve_order_sort(req)).offset(offset).limit(page_size)
         result = await db.execute(query)
         orders = result.scalars().all()
 

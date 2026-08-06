@@ -27,6 +27,87 @@ from .ws_client import ws_manager
 
 logger = logging.getLogger(__name__)
 
+def _normalize_segments_local(raw: Any) -> list[dict[str, Any]]:
+    """规范化 segments（发货执行端版本，宽松校验：非法段跳过而非抛错）。"""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    elif isinstance(raw, list):
+        parsed = raw
+    else:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        seg_type = str(item.get("type") or "").strip().lower()
+        if seg_type == "text":
+            content = str(item.get("content") or "").strip()
+            if content:
+                normalized.append({"type": "text", "content": content})
+        elif seg_type == "image":
+            image_url = str(item.get("imageUrl") or item.get("image_url") or "").strip()
+            if image_url:
+                seg: dict[str, Any] = {"type": "image", "imageUrl": image_url}
+                asset_id = item.get("assetId") or item.get("asset_id")
+                if asset_id is not None:
+                    seg["assetId"] = asset_id
+                normalized.append(seg)
+    return normalized
+
+
+async def _execute_segments_delivery(
+    client: Any,
+    cid: str,
+    to_id: str,
+    segments: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    """按 segments 顺序逐条发送消息（文本/图片），严禁合并为一条。"""
+    if not segments:
+        return True, ""
+    sent_count = 0
+    total = len(segments)
+    for idx, seg in enumerate(segments):
+        seg_type = seg.get("type")
+        try:
+            if seg_type == "text":
+                content = seg.get("content") or ""
+                if not content:
+                    continue
+                await client.send_text_message(cid=cid, to_id=to_id, text=content)
+                sent_count += 1
+                if idx < total - 1:
+                    await asyncio.sleep(0.5)
+            elif seg_type == "image":
+                image_url = seg.get("imageUrl") or seg.get("image_url") or ""
+                if not image_url:
+                    continue
+                asset_id = seg.get("assetId") or seg.get("asset_id")
+                send_image = getattr(client, "send_image_message", None)
+                if callable(send_image):
+                    await send_image(cid=cid, to_id=to_id, image_url=image_url, asset_id=asset_id)
+                else:
+                    await client.send_text_message(cid=cid, to_id=to_id, text=f"[图片] {image_url}")
+                sent_count += 1
+                if idx < total - 1:
+                    await asyncio.sleep(0.5)
+        except Exception as exc:
+            logger.warning(
+                "segments delivery failed at idx=%d type=%s error=%s",
+                idx, seg_type, exc, exc_info=True,
+            )
+            return False, f"第 {idx + 1} 段发送失败：{exc}"
+    if sent_count == 0:
+        return False, "所有段均无有效内容"
+    return True, ""
+
+
 MODE_TEXT = "text"
 MODE_CARD = "card"
 MODE_KAMI = "kami"
@@ -462,6 +543,24 @@ async def _process_delivery(
             "Realtime delivery rule matched accountId=%d itemId=%s ruleId=%s mode=%s",
             account_id, item_id, rule.get("id"), rule.get("delivery_mode"),
         )
+
+    # 多规格 SKU 规则匹配：若商品配置了 skuRules，则反查订单 skuId 并按 SKU 精确匹配发货规则。
+    # 反查失败或未匹配时回退到商品通用配置（保证发货不中断）。
+    sku_rules = rule.get("_sku_rules") if isinstance(rule, dict) else None
+    if sku_rules and external_order_id:
+        sku_id = await _resolve_order_sku_id(db, account_id, external_order_id, item_id)
+        if sku_id:
+            rule = await _apply_sku_rule_override(db, rule, sku_id)
+            logger.info(
+                "SKU规则匹配 accountId=%d xyGoodsId=%s skuId=%s matched=%s",
+                account_id, item_id, sku_id, rule.get("_sku_matched"),
+            )
+        else:
+            logger.info(
+                "SKU反查失败，回退商品通用配置 accountId=%d orderId=%s",
+                account_id, external_order_id,
+            )
+
     mode = _normalize_delivery_mode(rule.get("delivery_mode") if rule else "unconfigured")
     content = str((rule or {}).get("delivery_content") or "")
     content = _render_delivery_content(
@@ -511,6 +610,7 @@ async def _process_delivery(
         quantity_requested=quantity,
         card_group_id=_optional_int((rule or {}).get("card_group_id")),
         auto_confirm_shipment=_truthy((rule or {}).get("auto_confirm_shipment")),
+        segments=(rule or {}).get("segments") or None,
     )
     coordinator = RealtimeDeliveryCoordinator(
         store=SqlRealtimeDeliveryStore(db),
@@ -777,6 +877,16 @@ async def _load_goods_delivery_rule(
         # Persist the retired mode as failed; never read or call its URL fields.
         delivery_content = ""
 
+    # 从货源读取 segments（多条正文+图片配置），用于多段发送
+    source_segments = []
+    if source_id:
+        source = await _load_text_source(db, source_id)
+        if source:
+            source_segments = _normalize_segments_local(source.get("segments"))
+
+    # 保留 SKU 规则列表，供 _apply_sku_rule_override 按 skuId 精确匹配
+    sku_rules = config.get("skuRules") if isinstance(config.get("skuRules"), list) else []
+
     return {
         "id": row.get("id"),
         "goods_id": goods.get("id"),
@@ -789,7 +899,176 @@ async def _load_goods_delivery_rule(
         "auto_confirm_shipment": timing_config.get("autoConfirmShipment")
         or timing_config.get("auto_confirm_shipment")
         or 0,
+        "segments": source_segments,
+        "_sku_rules": sku_rules,
     }
+
+
+async def _resolve_order_sku_id(
+    db: AsyncSession,
+    account_id: int,
+    external_order_id: str,
+    xy_goods_id: str,
+) -> Optional[str]:
+    """反查订单的 skuId，用于多规格商品按 SKU 匹配发货规则。
+
+    查询路径：通过 external_order_id 关联 xianyu_trade_order.id，
+    再从 xianyu_trade_order_item 表读取 sku_id。
+
+    查询失败或无 sku_id 时返回 None（调用方回退商品通用配置）。
+    """
+    if not external_order_id:
+        return None
+    try:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT oi.sku_id
+                    FROM xianyu_trade_order_item oi
+                    JOIN xianyu_trade_order o ON o.id = oi.order_id
+                    WHERE o.account_id = :account_id
+                      AND o.external_order_id = :external_order_id
+                      AND oi.deleted = 0
+                      AND oi.sku_id IS NOT NULL
+                      AND oi.sku_id != ''
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "account_id": account_id,
+                    "external_order_id": external_order_id,
+                },
+            )
+        ).mappings().first()
+        if row and row.get("sku_id"):
+            return str(row["sku_id"])
+    except Exception as error:
+        logger.debug(
+            "查询订单项 sku_id 失败 accountId=%d orderId=%s error=%s",
+            account_id, external_order_id, error,
+        )
+    return None
+
+
+async def _lookup_sku_property_key(
+    db: AsyncSession,
+    goods_id: Any,
+    sku_id: str,
+) -> Optional[str]:
+    """从 xianyu_goods_sku 表查询 sku_id 对应的 property_key。"""
+    if not goods_id or not sku_id:
+        return None
+    try:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT property_key FROM xianyu_goods_sku
+                    WHERE goods_id = :goods_id AND sku_id = :sku_id
+                    LIMIT 1
+                    """
+                ),
+                {"goods_id": goods_id, "sku_id": sku_id},
+            )
+        ).mappings().first()
+        return str(row.get("property_key") or "") if row else None
+    except Exception as error:
+        logger.debug(
+            "查询 SKU property_key 失败 goodsId=%s skuId=%s error=%s",
+            goods_id, sku_id, error,
+        )
+    return None
+
+
+async def _apply_sku_rule_override(
+    db: AsyncSession,
+    rule: dict,
+    sku_id: str,
+) -> dict:
+    """按 skuId 在 skuRules 中查找精确规则，覆盖商品通用规则字段。
+
+    匹配顺序：
+    1. skuId 精确匹配
+    2. propertyKey 二次匹配（从 xianyu_goods_sku 表反查 property_key 后比对）
+
+    未匹配时返回原 rule（不修改）。
+    匹配时重新加载货源 sourceId 以获取对应的 content/segments。
+    """
+    sku_rules = rule.get("_sku_rules") or []
+    if not sku_rules or not sku_id:
+        return rule
+
+    matched = None
+    for item in sku_rules:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("skuId") or "") == str(sku_id):
+            matched = item
+            break
+
+    if not matched:
+        # skuId 未命中，反查 property_key 后按 propertyKey 二次匹配
+        property_key = await _lookup_sku_property_key(db, rule.get("goods_id"), sku_id)
+        if property_key:
+            for item in sku_rules:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("propertyKey") or "") == property_key:
+                    matched = item
+                    break
+
+    if not matched:
+        return rule
+
+    # 从匹配的 skuRule 的 payDelivery timing 配置中读取覆盖字段
+    timing_config = matched.get("payDelivery")
+    if not isinstance(timing_config, dict) or not _truthy(timing_config.get("enabled")):
+        # SKU 规则未启用，回退通用配置
+        return rule
+
+    mode = _normalize_delivery_mode(timing_config.get("mode"))
+    header = str(timing_config.get("header") or "")
+    footer = str(timing_config.get("footer") or "")
+    source_id = timing_config.get("sourceId")
+    source_title = str(timing_config.get("sourceTitle") or "")
+
+    if mode == MODE_TEXT:
+        content = str(timing_config.get("content") or "")
+        if source_id:
+            source = await _load_text_source(db, source_id)
+            if source:
+                content = content or str(source.get("content") or "")
+                source_title = source_title or str(source.get("title") or "")
+        delivery_content = _build_delivery_content(header, content, footer)
+        if not delivery_content.strip():
+            return rule
+    elif mode == MODE_CARD:
+        card_template = str(timing_config.get("cardTemplate") or "{卡密}")
+        delivery_content = _build_delivery_content(header, card_template, footer)
+    else:
+        delivery_content = ""
+
+    # 从货源读取 segments
+    source_segments: list[dict[str, Any]] = []
+    if source_id:
+        source = await _load_text_source(db, source_id)
+        if source:
+            source_segments = _normalize_segments_local(source.get("segments"))
+
+    rule["delivery_mode"] = mode
+    rule["delivery_content"] = delivery_content
+    rule["card_group_id"] = timing_config.get("cardGroupId")
+    rule["source_id"] = source_id
+    rule["source_title"] = source_title
+    rule["auto_confirm_shipment"] = (
+        timing_config.get("autoConfirmShipment")
+        or timing_config.get("auto_confirm_shipment")
+        or 0
+    )
+    rule["segments"] = source_segments
+    rule["_sku_matched"] = True
+    return rule
 
 
 async def _load_text_source(db: AsyncSession, source_id: Any) -> Optional[dict]:
@@ -797,7 +1076,7 @@ async def _load_text_source(db: AsyncSession, source_id: Any) -> Optional[dict]:
         await db.execute(
             text(
                 """
-                SELECT id, title, content
+                SELECT id, title, content, segments
                 FROM delivery_text_source
                 WHERE id = :source_id
                   AND deleted = 0
@@ -845,8 +1124,12 @@ async def send_delivery_message_result(
     s_id: str,
     buyer_user_id: str,
     content: str,
+    segments: list[dict[str, Any]] | None = None,
 ) -> dict:
-    """Send once while preserving confirmed/failed/unknown ACK semantics."""
+    """Send once while preserving confirmed/failed/unknown ACK semantics.
+
+    若 segments 非空，优先按 segments 逐条发送（文本/图片），无 segments 时回退单条 content。
+    """
 
     client = ws_manager.get_client(account_id)
     if not client or not client.is_connected:
@@ -872,6 +1155,19 @@ async def send_delivery_message_result(
         if buyer_user_id.endswith("@goofish")
         else f"{buyer_user_id}@goofish"
     )
+    # 优先走 segments 多段发送（多条正文+图片），无 segments 时回退单条 content
+    if segments:
+        normalized_segments = _normalize_segments_local(segments)
+        if normalized_segments:
+            ok, err = await _execute_segments_delivery(client, cid, to_id, normalized_segments)
+            if ok:
+                return {"status": "confirmed", "retrySafe": False}
+            return {
+                "status": "failed",
+                "errorCode": "segments_delivery_failed",
+                "message": err,
+                "retrySafe": True,
+            }
     result = await client.send_text_message(cid=cid, to_id=to_id, text=content)
     if not isinstance(result, dict):
         return {

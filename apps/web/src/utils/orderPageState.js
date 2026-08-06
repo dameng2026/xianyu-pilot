@@ -117,12 +117,17 @@ export function buildOrderDetailViewModel(order) {
 
 export function buildManualDeliveryPayload(form) {
   const deliveryMode = String(form?.deliveryMode || 'text').trim()
-  return {
+  const payload = {
     deliveryMode: deliveryMode === 'card' ? 'card' : 'text',
     deliveryContent: String(form?.deliveryContent || '').trim(),
     quantityRequested: Math.max(Number(form?.quantityRequested) || 1, 1),
-    idempotencyKey: String(form?.idempotencyKey || '').trim()
+    idempotencyKey: String(form?.idempotencyKey || '').trim(),
+    deliveryTiming: String(form?.deliveryTiming || 'after_payment').trim()
   }
+  if (form?.deliverySource === 'library' && form?.sourceId) {
+    payload.sourceId = Number(form.sourceId)
+  }
+  return payload
 }
 
 export function createManualDeliveryIdempotencyKey(cryptoApi = globalThis.crypto) {
@@ -230,7 +235,9 @@ export function buildOrdersQuery(query) {
     keyword: query?.keyword || undefined,
     status: status === '' ? undefined : Number(status),
     current,
-    size: Number(query?.size || 20) || 20
+    size: Number(query?.size || 20) || 20,
+    sortField: query?.sortField || undefined,
+    sortOrder: query?.sortOrder || undefined
   }
   if (accountId && shouldSync) {
     payload.sync = true

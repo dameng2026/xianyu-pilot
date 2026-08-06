@@ -463,12 +463,12 @@ def _resolve_bridge_value(encoded: str, seed: str) -> str:
     return bytes(b ^ key[i % len(key)] for i, b in enumerate(raw)).decode("utf-8")
 
 
-_BRIDGE_ENC_TOKEN = "YVH1R5vehLMNnAGdfZiSMEQENjSaQntxGz+8CRW/omVeS+Fovtasq2e9LaJ4v49rQg4SVb9Df18/ErEwC4jbag=="
-_BRIDGE_ENC_BACKEND = "OdYUt2f/8hPUpVB6jx5xZtNFDafSnw=="
-_BRIDGE_ENC_FRONTEND = "yx3FjgYRZ4ioF9g1j1S1ilXE/6DP619LWD5+"
-_BRIDGE_SEED_TOKEN = "xianyu.bridge.token.v1"
-_BRIDGE_SEED_BACKEND = "xianyu.backend.url.v1"
-_BRIDGE_SEED_FRONTEND = "xianyu.frontend.url.v1"
+_BRIDGE_ENC_TOKEN = "0U34kM8JkBvWvFRjcJp3cCsYy3XY+0TCFYEu4L9fAa/uV+y/6gG4A7ydeFx1vWorLRLvFP36QOwxrCPZoWh4oA=="
+_BRIDGE_ENC_BACKEND = "noGcALZ+NUyrnGCFtSMSZ3WsvzSbI7znFXRP"
+_BRIDGE_ENC_FRONTEND = "zVB6D3X4NZfv2QYII2yZz0TaNJanh3S97d8j"
+_BRIDGE_SEED_TOKEN = "xianyu.bridge.token.3a1c9786"
+_BRIDGE_SEED_BACKEND = "xianyu.backend.url.e1c1b20b"
+_BRIDGE_SEED_FRONTEND = "xianyu.frontend.url.e1896305"
 
 _BUILTIN_BRIDGE_DEFAULTS: dict[str, str] = {
     "commercial_backend_base_url": _resolve_bridge_value(_BRIDGE_ENC_BACKEND, _BRIDGE_SEED_BACKEND),

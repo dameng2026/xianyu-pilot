@@ -217,11 +217,31 @@
         <div class="form-grid">
           <div class="form-row">
             <label>售价（元）</label>
-            <input v-model="form.price" type="number" step="0.01" min="0" placeholder="0.00">
+            <input v-model="form.price" type="number" step="0.01" min="0" placeholder="0.00" :disabled="form.multiSpecEnabled">
           </div>
           <div class="form-row">
             <label>库存</label>
-            <input v-model="form.stock" type="number" placeholder="1">
+            <input v-model="form.stock" type="number" placeholder="1" :disabled="form.multiSpecEnabled">
+          </div>
+        </div>
+        <div v-if="form.multiSpecEnabled" class="subtle" style="margin-top:6px">已开启多规格，售价/库存按下方 SKU 表格填写</div>
+
+        <div class="multi-spec-section" style="margin-top:16px">
+          <div class="multi-spec-head">
+            <div class="multi-spec-info">
+              <span class="multi-spec-title">多规格商品（SKU）</span>
+              <span class="subtle">仅鱼小铺账号可用，最多 2 个规格类型</span>
+            </div>
+            <ToggleSwitch :on="form.multiSpecEnabled" @click="toggleMultiSpec" />
+          </div>
+          <div v-if="!form.multiSpecEnabled && !isFishShopAccount && form.accountId" class="subtle warn" style="margin-top:8px">
+            当前账号不是鱼小铺，无法开启多规格
+          </div>
+          <div v-if="form.multiSpecEnabled" style="margin-top:12px">
+            <MultiSpecEditor v-model="multiSpecData" />
+            <div v-if="multiSpecValidSkus.length" class="subtle" style="margin-top:8px">
+              共 {{ multiSpecValidSkus.length }} 个有效 SKU，总库存 {{ multiSpecTotalStock }}，起售价 ¥{{ Number(multiSpecMinPrice).toFixed(2) }}
+            </div>
           </div>
         </div>
       </CardPanel>
@@ -332,6 +352,8 @@ import ToggleSwitch from '../components/ToggleSwitch.vue'
 import PublishAddressCascader from '../components/PublishAddressCascader.vue'
 import { getAccounts, checkAccountAuth } from '../api/accounts.js'
 import { publishItem, autoCategory } from '../api/items.js'
+import MultiSpecEditor from '../components/MultiSpecEditor.vue'
+import { publishFishShopItem } from '../api/fishShop.js'
 import { uploadImage, uploadImageFromUrl } from '../api/misc.js'
 import { runtimeConfig } from '../api/system.js'
 import { getGoods } from '../api/goods.js'
@@ -812,7 +834,98 @@ const form = reactive({
   price: '',
   stock: '',
   supportSelfPick: false,
+  multiSpecEnabled: false,
 })
+
+// === 多规格商品（仅鱼小铺账号） ===
+const multiSpecData = reactive({
+  propertyGroups: [],  // [{propertyName, supportImage, propertyValues: [{propertyValue, propertyValueImg}]}]
+  skuList: [],          // [{price, quantity, propertyList: [{propertyText, valueText}]}]
+})
+
+// 当前所选账号是否为鱼小铺（兼容 fishShopUser / fish_shop_user 字段）
+const isFishShopAccount = computed(() => {
+  const acc = accounts.value.find(a => String(a.id) === String(form.accountId))
+  return !!(acc && (acc.fishShopUser || acc.fish_shop_user))
+})
+
+// 多规格开关切换
+function toggleMultiSpec() {
+  if (!form.multiSpecEnabled) {
+    // 当前关闭，准备开启：必须先校验鱼小铺权限
+    if (!form.accountId) {
+      error.value = '请先选择闲鱼账号'
+      return
+    }
+    if (!isFishShopAccount.value) {
+      error.value = '当前闲鱼账号不支持多规格商品，只有鱼小铺账号可以使用'
+      return
+    }
+    form.multiSpecEnabled = true
+    // 若首次开启且无规格类型，自动添加一个空规格
+    if (multiSpecData.propertyGroups.length === 0) {
+      multiSpecData.propertyGroups.push({
+        propertyName: '',
+        supportImage: false,
+        propertyValues: [{ propertyValue: '', propertyValueImg: '' }],
+      })
+    }
+  } else {
+    // 关闭：清空多规格数据
+    form.multiSpecEnabled = false
+    multiSpecData.propertyGroups = []
+    multiSpecData.skuList = []
+  }
+}
+
+// 切换账号时，若新账号不是鱼小铺，自动关闭多规格
+watch(() => form.accountId, (newId, oldId) => {
+  if (newId === oldId) return
+  if (form.multiSpecEnabled) {
+    const acc = accounts.value.find(a => String(a.id) === String(newId))
+    if (!(acc && (acc.fishShopUser || acc.fish_shop_user))) {
+      form.multiSpecEnabled = false
+      multiSpecData.propertyGroups = []
+      multiSpecData.skuList = []
+      error.value = '已切换到普通账号，多规格已关闭（仅鱼小铺账号可使用多规格）'
+    }
+  }
+})
+
+// 有效 SKU（规格完整 + 价格库存已填）
+const multiSpecValidSkus = computed(() => multiSpecData.skuList.filter(s => {
+  const hasProps = (s.propertyList || []).length > 0
+  const hasPrice = s.price !== '' && s.price !== undefined && s.price !== null && Number(s.price) >= 0
+  const hasQty = s.quantity !== '' && s.quantity !== undefined && s.quantity !== null && Number(s.quantity) > 0
+  return hasProps && hasPrice && hasQty
+}))
+const multiSpecTotalStock = computed(() => multiSpecValidSkus.value.reduce((sum, s) => sum + (Number(s.quantity) || 0), 0))
+const multiSpecMinPrice = computed(() => {
+  if (!multiSpecValidSkus.value.length) return 0
+  return Math.min(...multiSpecValidSkus.value.map(s => Number(s.price) || 0))
+})
+
+// 构造多规格发布载荷
+function buildItemPropertiesForPublish() {
+  return multiSpecData.propertyGroups
+    .filter(g => (g.propertyName || '').trim() && (g.propertyValues || []).some(v => (v.propertyValue || '').trim()))
+    .map(g => ({
+      propertyName: g.propertyName.trim(),
+      supportImage: !!g.supportImage,
+      propertyValues: (g.propertyValues || [])
+        .filter(v => (v.propertyValue || '').trim())
+        .map(v => ({ propertyValue: v.propertyValue.trim(), propertyValueImg: v.propertyValueImg || '' })),
+    }))
+}
+function buildItemSkuListForPublish() {
+  return multiSpecData.skuList
+    .filter(s => (s.propertyList || []).length && s.price !== '' && s.price !== undefined && s.price !== null && s.quantity !== '' && s.quantity !== undefined && s.quantity !== null)
+    .map(s => ({
+      price: s.price,
+      quantity: s.quantity,
+      propertyList: (s.propertyList || []).map(p => ({ propertyText: p.propertyText, valueText: p.valueText })),
+    }))
+}
 
 // === 运费设置 ===
 const shippingMode = ref('free')
@@ -972,8 +1085,9 @@ const checks = computed(() => [
   { text: '已上传商品图片', ok: form.imageUrls.length > 0 },
   { text: '分类已选择', ok: !!selectedCategoryName.value },
   { text: '商品位置已确认', ok: !!selectedAddress.value },
-  { text: '价格已填写', ok: Number(form.price) > 0 },
-  { text: '库存数大于 0', ok: totalStock.value > 0 },
+  { text: '价格已填写', ok: form.multiSpecEnabled ? multiSpecValidSkus.value.length > 0 : Number(form.price) > 0 },
+  { text: '库存数大于 0', ok: form.multiSpecEnabled ? multiSpecTotalStock.value > 0 : totalStock.value > 0 },
+  { text: '多规格数据完整', ok: !form.multiSpecEnabled || (multiSpecValidSkus.value.length > 0 && buildItemPropertiesForPublish().length > 0) },
   { text: '自动发货货源已选择', ok: !autoDelivery.enabled || !!autoDelivery.sourceId },
 ])
 
@@ -1435,26 +1549,49 @@ async function submit() {
     // 先发布到闲鱼，成功后再保存到本地数据库，避免发布失败时本地却显示商品
     if (!publishIntent.payload) {
       publishIntent.idempotencyKey = createPublishIntentKey()
-      publishIntent.payload = {
-        xianyuAccountId: Number(form.accountId),
-        title: form.title.slice(0, 30),
-        description: form.description,
-        imageUrls: [...form.imageUrls],
-        price: finalPrice,
-        stock: finalStock,
-        category: selectedCategoryName.value,
-        shippingMode: shippingMode.value,
-        postFee: shippingMode.value === 'fixed' ? 0 : 0,
-        freeShipping: freeShipping,
-        supportSelfPick: form.supportSelfPick,
-        location: locationData,
+      if (form.multiSpecEnabled) {
+        // 鱼小铺多规格发布：价格/库存按 SKU 表格填写，payload 携带规格与 SKU 数据
+        publishIntent.payload = {
+          xianyuAccountId: Number(form.accountId),
+          title: form.title.slice(0, 30),
+          description: form.description,
+          imageUrls: [...form.imageUrls],
+          itemProperties: buildItemPropertiesForPublish(),
+          itemSkuList: buildItemSkuListForPublish(),
+          category: selectedCategoryName.value,
+          shippingMode: shippingMode.value,
+          postFee: shippingMode.value === 'fixed' ? 0 : 0,
+          freeShipping: freeShipping,
+          supportSelfPick: form.supportSelfPick,
+          location: locationData,
+        }
+      } else {
+        publishIntent.payload = {
+          xianyuAccountId: Number(form.accountId),
+          title: form.title.slice(0, 30),
+          description: form.description,
+          imageUrls: [...form.imageUrls],
+          price: finalPrice,
+          stock: finalStock,
+          category: selectedCategoryName.value,
+          shippingMode: shippingMode.value,
+          postFee: shippingMode.value === 'fixed' ? 0 : 0,
+          freeShipping: freeShipping,
+          supportSelfPick: form.supportSelfPick,
+          location: locationData,
+        }
       }
       savePublishIntent()
     }
-    const publishRes = await publishItem({
-      ...publishIntent.payload,
-      idempotencyKey: publishIntent.idempotencyKey,
-    })
+    const publishRes = form.multiSpecEnabled
+      ? await publishFishShopItem({
+          ...publishIntent.payload,
+          idempotencyKey: publishIntent.idempotencyKey,
+        })
+      : await publishItem({
+          ...publishIntent.payload,
+          idempotencyKey: publishIntent.idempotencyKey,
+        })
 
     if (publishRes.code === 200) {
       success.value = '发布成功，平台与本地商品库均已确认。'
