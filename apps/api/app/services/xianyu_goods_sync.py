@@ -1781,6 +1781,9 @@ class XianyuItemOperator:
         if TOKEN_EXPIRED in str(ret_msg) or TOKEN_EXPIRED_ALIAS in str(ret_msg) or SESSION_EXPIRED in str(ret_msg):
             raise RuntimeError("登录已过期，请重新登录闲鱼账号")
         if not any("SUCCESS" in str(r) for r in ret):
+            if any("POLISH_AGAIN" in str(r) for r in ret):
+                # 擦亮接口的幂等状态（今天已擦亮过）——放行，交给 polish_item 判为成功
+                return result
             raise RuntimeError("闲鱼平台暂未接受商品操作请求，请稍后重试")
 
         # 鱼小铺接口额外检查 data.data
@@ -1868,7 +1871,9 @@ class XianyuItemOperator:
     # ==================== 擦亮商品（所有账号可用） ====================
 
     POLISH_API = "mtop.taobao.idle.item.polish"
-    POLISH_VERSION = "2.0"
+    # ⚠️ 必须用 1.0：2.0 是假接口（永远返回 SUCCESS/exposure:true 但闲鱼端不记录，App 里看不到"已擦亮"）
+    # 1.0 才是 App 同款真实接口（已擦亮会返回 FAIL_BIZ_IDLEITEM_POLISH_AGAIN）
+    POLISH_VERSION = "1.0"
 
     def polish_item(self, item_id: str) -> bool:
         """
@@ -1881,6 +1886,10 @@ class XianyuItemOperator:
         ret_msg = ret[0] if isinstance(ret, list) and ret else str(ret)
         if "SUCCESS" in ret_msg.upper():
             logger.info("商品擦亮成功: itemId=%s", item_id)
+            return True
+        if "POLISH_AGAIN" in ret_msg.upper():
+            # 今天已在 App/其他入口擦亮过，幂等视为成功（避免 auto-polish 误报失败）
+            logger.info("商品今天已擦亮: itemId=%s", item_id)
             return True
         logger.warning("商品擦亮失败: itemId=%s ret=%s", item_id, ret_msg)
         return False
