@@ -23,4 +23,4 @@ openpyxl==3.1.5
 python-pptx==1.0.2
 redis==8.0.1
 croniter==6.2.4
-tzdata==2026.1
+tzdata==2026.3
