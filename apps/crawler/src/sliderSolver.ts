@@ -19,7 +19,7 @@
  *   punish 状态检测、假成功防护、风险 cookies 清除、5 次重试、1 次真人行动模拟（2026-08-04 对齐商业版）。
  *   默认轨迹方案基于最小急动度剖面（Hogan 1984），与商业版 sliderSolve.py 的 human_physics_drag 一致。
  */
-import { chromium, type Browser, type Page, type BrowserContextOptions, type Cookie } from 'playwright';
+import { chromium, type Browser, type BrowserServer, type Page, type BrowserContextOptions, type Cookie } from 'playwright';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -1899,12 +1899,16 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
   const timeoutMs = Number.isSafeInteger(timeout) ? Math.max(5000, Math.min(timeout, 180000)) : 30000;
 
   let browser: Browser | null = null;
+  let browserServer: BrowserServer | null = null;
   let context: any = null;
   let screenshotPath: string | undefined;
   // 持久化上下文的 userDataDir，需在 finally 中清理以防 Cookie/缓存残留磁盘
   let userDataDirForCleanup: string | null = null;
+  // 追踪所有启动过的 Chromium 进程，launch 抛异常时也能兜底清理（修复进程泄漏）
+  const spawnedPids: Set<number> = new Set();
   const abortBrowser = () => {
     void browser?.close().catch(() => undefined);
+    void browserServer?.close().catch(() => undefined);
   };
 
   try {
@@ -1977,7 +1981,7 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
       const disableSandbox = /^(1|true|yes|on)$/i.test(
         String(process.env.PLAYWRIGHT_DISABLE_SANDBOX || '')
       );
-      browser = await chromium.launch({
+      browserServer = await chromium.launchServer({
         headless,
         chromiumSandbox: process.platform === 'linux' && !disableSandbox,
         // 去掉 Playwright 默认 --enable-automation，显著降低「自动化窗口」被标记概率
@@ -1990,6 +1994,9 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
           ...(disableSandbox ? ['--no-sandbox'] : []),
         ],
       });
+      const serverProc = browserServer.process();
+      if (serverProc && serverProc.pid) { spawnedPids.add(serverProc.pid); }
+      browser = await chromium.connect({ wsEndpoint: browserServer.wsEndpoint() });
       options.signal?.addEventListener('abort', abortBrowser, { once: true });
       options.signal?.throwIfAborted();
       context = await browser.newContext({
@@ -2512,9 +2519,22 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
       } else if (browser) {
         await browser.close().catch(() => {});
       }
+      if (browserServer) {
+        await browserServer.close().catch(() => {});
+        browserServer = null;
+      }
     } catch {
       // ignore
     }
+    // 兜底：优雅关闭后仍残留的 Chromium 进程强制 kill，防止累积泄漏
+    for (const pid of spawnedPids) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // 进程已退出或无权 kill，忽略
+      }
+    }
+    spawnedPids.clear();
     // 清理持久化上下文的 userDataDir，防止用户 Cookie/localStorage 残留磁盘
     if (userDataDirForCleanup) {
       try {
