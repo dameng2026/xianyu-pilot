@@ -483,9 +483,18 @@ async def publish_item(
         if orig_price:
             item_data["origPrice"] = orig_price
 
-        # 分类（优先用类目推荐 API，这里传参作为手动回退用）
+        # 分类（优先用类目推荐 API；传完整 dict 可强制指定类目）
         category = req.get("category", "")
-        if category:
+        if isinstance(category, dict):
+            item_data["category"] = {
+                "catId": str(category.get("catId") or ""),
+                "catName": category.get("catName") or "",
+                "channelCatId": str(category.get("channelCatId") or ""),
+                "tbCatId": str(category.get("tbCatId") or ""),
+            }
+            if req.get("forceCategory"):
+                item_data["forceCategory"] = True
+        elif category:
             item_data["category"] = {"catName": category}
 
         # 位置信息（来自前端 POI 搜索选中的 dict）

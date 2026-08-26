@@ -2648,15 +2648,17 @@ class XianyuItemPublisher:
 
         # ---- Step 1: 类目推荐 ----
         logger.info("Step 1/3: 类目推荐 titleLength=%d", len(title))
-        recommend_result = self.category_recommend(title, desc, image_urls)
-
-        if recommend_result.get("recommended"):
-            category_info = recommend_result
-            logger.info("类目推荐成功: %s (catId=%s)", category_info["catName"], category_info["catId"])
-        else:
-            # 回退到手动指定的类目
-            logger.info("类目推荐失败，使用手动指定类目")
-            user_cat = item_data.get("category", {})
+        user_cat = item_data.get("category") or {}
+        if isinstance(user_cat, str):
+            user_cat = {"catName": user_cat}
+        force_category = bool(user_cat.get("catId")) and bool(item_data.get("forceCategory"))
+        if force_category:
+            # 手动指定类目：跳过推荐 API（用于推荐类目已废弃等场景）
+            logger.info(
+                "使用手动指定类目: %s (catId=%s)",
+                user_cat.get("catName", ""),
+                user_cat.get("catId"),
+            )
             category_info = {
                 "recommended": False,
                 "catId": user_cat.get("catId") or self.DEFAULT_CAT_ID,
@@ -2665,6 +2667,23 @@ class XianyuItemPublisher:
                 "tbCatId": user_cat.get("tbCatId") or self.DEFAULT_TB_CAT_ID,
                 "cardList": [],
             }
+        else:
+            recommend_result = self.category_recommend(title, desc, image_urls)
+            if recommend_result.get("recommended"):
+                category_info = recommend_result
+                logger.info("类目推荐成功: %s (catId=%s)", category_info["catName"], category_info["catId"])
+            else:
+                # 回退到手动指定的类目
+                logger.info("类目推荐失败，使用手动指定类目")
+                user_cat = item_data.get("category", {})
+                category_info = {
+                    "recommended": False,
+                    "catId": user_cat.get("catId") or self.DEFAULT_CAT_ID,
+                    "catName": user_cat.get("catName") or self.DEFAULT_CAT_NAME,
+                    "channelCatId": user_cat.get("channelCatId") or self.DEFAULT_CHANNEL_CAT_ID,
+                    "tbCatId": user_cat.get("tbCatId") or self.DEFAULT_TB_CAT_ID,
+                    "cardList": [],
+                }
 
         # ---- Step 2: 图片上传到闲鱼 CDN ----
         logger.info("Step 2/3: 图片上传 - %d 张", len(image_urls))
