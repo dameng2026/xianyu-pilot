@@ -234,6 +234,7 @@ services:
       APP_ENV: production
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 12401
+      TZ: Asia/Shanghai
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD_HASH_FILE: /run/secrets/admin_password_hash
       MYSQL_HOST: mysql
