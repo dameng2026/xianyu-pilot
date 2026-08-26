@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import smtplib
 import ssl
 import time
@@ -232,13 +233,18 @@ def _render_template(
     content: str,
     context: Optional[dict[str, object]] = None,
 ) -> str:
-    """渲染消息模板，支持 {title}、{content}、{time} 变量。"""
+    """渲染消息模板，支持 {title}、{content}、{msg}、{time} 变量。
+
+    {msg} 是 {content} 的别名，兼容历史配置里误用的 {{msg}} 占位符，
+    避免模板中未定义的变量被原样发送给用户。
+    """
     if not template:
         template = "{{title}}\n{{content}}"
 
     values: dict[str, str] = {
         "title": title or "",
         "content": content or "",
+        "msg": content or "",
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "event": "",
         "account": "",
@@ -248,11 +254,15 @@ def _render_template(
         for key, value in context.items():
             values[str(key)] = "" if value is None else str(value)
 
-    rendered = template
-    for key, value in values.items():
-        rendered = rendered.replace(f"{{{{{key}}}}}", value)
-        rendered = rendered.replace(f"{{{key}}}", value)
-    return rendered
+    # 单遍正则替换：{{key}} 优先、{key} 其次。避免已插入的文本（如 content
+    # 里恰好含 {{title}}/{{content}} 字面）被下一轮 replace 再次匹配导致嵌套污染。
+    pattern = re.compile(r"\{\{(\w+)\}\}|\{(\w+)\}")
+
+    def _sub(match: "re.Match[str]") -> str:
+        key = match.group(1) or match.group(2)
+        return values.get(key, match.group(0))
+
+    return pattern.sub(_sub, template)
 
 
 def _gen_feishu_sign(timestamp: int, secret: str) -> str:
