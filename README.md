@@ -25,7 +25,7 @@
 > - 🔍 **商机挖掘** — 关键词 / 类目 / 对标店铺维度挖掘热门商品，一键 AI 改写标题文案 + AI 生图 + 直接发布，快速复制成熟店铺的选品思路
 > - ⚙️ **工作流能力** — 工作流可视化编排、条件化自动选品、多账号批量铺货、定时发布，实现无人值守的自动上架
 >
-> 如需商业化功能、技术支持与运维托管，可访问商业版官网：[https://www.xianyupilot.com/](https://www.xianyupilot.com/)
+> 商业版源码仓库：[xianyu-pilot-pro（已停止维护，仅供存档）](https://github.com/dameng2026/xianyu-pilot-pro)
 
 ---
 
@@ -104,13 +104,11 @@
 | :---: | :---: |
 | ![商业版1](screenshots/commercial-1.png) | ![商业版2](screenshots/commercial-2.png) |
 
-## 🏆 商业版服务
+## 🏆 商业版已全面开源
 
-如果你需要更稳定、更强大的能力，或希望获得 **7×24 小时** 的技术支持与托管服务，欢迎了解我们的商业版：
+商业版项目 **`xianyu-pilot-pro` 已停止维护**，其全部能力现已在本仓库**全面开源**并持续迭代。开源版与商业版能力一致、可独立运行，互不冲突。
 
-👉 **[访问商业版服务](https://www.xianyupilot.com/#/)** 
-
-商业版在开源版基础上提供更完善的多账号管理、商机发掘、工作流自动化、专属客服与运维保障。开源版与商业版可独立运行，互不冲突。
+👉 **商业版源码仓库**：[xianyu-pilot-pro](https://github.com/dameng2026/xianyu-pilot-pro)
 
 ## 🚀 3 分钟快速上手
 
@@ -415,7 +413,7 @@ python scripts/production_ops.py --env-file .env restart api web
 如有需要，欢迎联系：
 
 - 微信：**`JiShu0724`**（备注「定制 / 外包」）
-- 商业版官网：[https://www.xianyupilot.com/](https://www.xianyupilot.com/)
+- 商业版源码：[xianyu-pilot-pro](https://github.com/dameng2026/xianyu-pilot-pro)
 
 <div align="center">
 
