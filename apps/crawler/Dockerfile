@@ -13,7 +13,7 @@ RUN npm run build \
 
 # Keep the Playwright runtime and browser version exactly aligned with the
 # package lock. The final process runs as the image's unprivileged pwuser.
-FROM mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
+FROM mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
 
 ENV NODE_ENV=production \
     HOME=/home/pwuser \
