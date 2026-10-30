@@ -1665,7 +1665,8 @@ async function checkRefreshDialog(page: Page): Promise<boolean> {
       // 排除 Baxia punish / 验证码 frame
       if (/_____tmd_____|punish|baxia|nocaptcha|captcha|verify/i.test(url)) return false;
       // 只检测 goofish.com 主 frame（IM 页面），排除第三方脚本 frame
-      if (!/goofish\.com/i.test(url)) return false;
+      const hostname = new URL(url).hostname.toLowerCase();
+      if (hostname !== 'goofish.com' && !hostname.endsWith('.goofish.com')) return false;
       return true;
     } catch {
       return false;
@@ -2035,11 +2036,10 @@ export async function solveGoofishSlider(options: SlideSolveOptions = {}): Promi
     // 此时不会出现滑块弹窗，旧逻辑会误报 "solved: true"，导致 captcha_solver 错误地恢复 cookie_status=1。
     // 必须在此检测登录页跳转，明确返回失败，让用户知道需要重新扫码登录而不是滑块问题。
     const currentUrl = page.url();
+    const currentLocation = new URL(currentUrl);
     const isLoginPage =
-      /login\.taobao\.com/i.test(currentUrl) ||
-      /login\.goofish\.com/i.test(currentUrl) ||
-      /\/login\b/i.test(currentUrl) ||
-      /\/uiLogin\b/i.test(currentUrl);
+      ['login.taobao.com', 'login.goofish.com'].includes(currentLocation.hostname.toLowerCase()) ||
+      /\/(?:login|uiLogin)\b/i.test(currentLocation.pathname);
     if (isLoginPage) {
       console.warn('[SliderSolver] 页面被重定向到登录页，Cookie Session 已过期');
       return {

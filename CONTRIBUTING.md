@@ -55,6 +55,24 @@ start.bat
 
 ## 代码规范
 
+### CI 与发布检查
+
+GitHub Actions 会在面向 `main` 的 PR、`main` 推送、`v*` 标签和手动运行时执行检查。
+统一的 `Quality gate` 要求 Linux/Windows 后端回归、Web/Crawler 构建、依赖审计、
+CodeQL、全历史密钥扫描、Docker 构建检查及门禁自身测试全部成功。
+失败、取消或跳过的必需检查均不能放行发布。
+
+本地可先运行不需要第三方依赖的门禁测试：
+
+```bash
+python -m unittest discover -s tests/ci -v
+```
+
+后端回归使用 Python 3.11、`apps/api/requirements.txt` 与根目录 `requirements-ci.txt`。
+前端与 Crawler 的 Node/npm 精确版本以各自 `package.json` 为准。
+手动运行默认只检查，发布需勾选 `publish_docker`，且只能在 `main` 或合法版本标签上执行。
+完整说明见 [流水线分析与改造说明](docs/ci-pipeline.md)。
+
 ### Python 后端
 
 - 使用 `async/await`，不使用回调风格

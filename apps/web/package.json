@@ -12,16 +12,17 @@
     "assets:prune": "node ./scripts/prune-public-source-assets.mjs",
     "dev": "node ./node_modules/vite/bin/vite.js",
     "build": "node ./node_modules/vite/bin/vite.js build",
+    "build:desktop": "node ./node_modules/vite/bin/vite.js build --config vite.desktop.config.js",
     "preview": "node ./node_modules/vite/bin/vite.js preview --host 0.0.0.0",
     "build:spring": "node ./node_modules/vite/bin/vite.js build && node -e \"const fs=require('fs');const path=require('path');const staticDir=path.join(__dirname,'../src/main/resources/static');if(fs.existsSync(staticDir)){fs.rmSync(staticDir,{recursive:true,force:true})}const distDir=path.join(__dirname,'dist');function copyDir(src,dest){if(!fs.existsSync(dest)){fs.mkdirSync(dest,{recursive:true})}const entries=fs.readdirSync(src,{withFileTypes:true});for(let e of entries){const s=path.join(src,e.name);const d=path.join(dest,e.name);e.isDirectory()?copyDir(s,d):fs.copyFileSync(s,d)}}copyDir(distDir,staticDir)\"",
     "lint": "node ./node_modules/eslint/bin/eslint.js . --max-warnings=0"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "6.0.7",
-    "axios": "1.16.1",
+    "axios": "1.21.0",
     "echarts": "5.6.0",
-    "vite": "8.0.16",
-    "vue": "3.5.35"
+    "vite": "8.3.5",
+    "vue": "3.5.44"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

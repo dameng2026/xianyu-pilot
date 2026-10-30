@@ -1,4 +1,5 @@
 import { dateTime } from './apiData.js'
+import { createSecureId } from './secureId.js'
 
 const ORDER_STATUS_META = {
   0: { text: '待付款', badge: 'orange' },
@@ -131,17 +132,7 @@ export function buildManualDeliveryPayload(form) {
 }
 
 export function createManualDeliveryIdempotencyKey(cryptoApi = globalThis.crypto) {
-  if (typeof cryptoApi?.randomUUID === 'function') {
-    return `manual-delivery-${cryptoApi.randomUUID()}`
-  }
-
-  if (typeof cryptoApi?.getRandomValues === 'function') {
-    const random = cryptoApi.getRandomValues(new Uint32Array(4))
-    return `manual-delivery-${Array.from(random, value => value.toString(16).padStart(8, '0')).join('')}`
-  }
-
-  const entropy = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  return `manual-delivery-${entropy}`
+  return createSecureId('manual-delivery', cryptoApi)
 }
 
 export function buildManualDeliveryOutcome(data = {}) {

@@ -1,0 +1,4 @@
+# CI-only tools; never install these into the application image.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pip-audit==2.10.1

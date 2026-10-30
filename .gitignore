@@ -24,9 +24,14 @@ htmlcov/
 *-audit-result.json
 .__atomic-write*
 .venv/
+.venv-ci/
+.venv-desktop/
+reports/
+apps/desktop/web-dist/
 venv/
 .tmp-api-venv/
 .tmp/
+/data/
 
 # Local runtime data and browser-test artifacts must never be published.
 .playwright-cli/

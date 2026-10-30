@@ -22,7 +22,7 @@ from .xianyu_api_service import fetch_sold_orders_page
 logger = logging.getLogger(__name__)
 
 # 闲鱼订单状态文本 → 内部状态码（与商业版 _map_remote_order_status 一致）
-# 0待付款 1已付款 2待发货 3已发货 4已完成 5已关闭
+# 0待付款 1已付款 2待发货 3已发货 4已完成 5已关闭 6待核验/退款处理中
 _ORDER_STATUS_MAP = {
     "待付款": 0,
     "已付款": 1,
@@ -30,7 +30,7 @@ _ORDER_STATUS_MAP = {
     "已发货": 3,
     "交易成功": 4,
     "交易关闭": 5,
-    "退款中": 2,
+    "退款中": 6,
     "退款成功": 5,
     "已退款": 5,
     "退款关闭": 5,
@@ -58,9 +58,9 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def _map_order_status(raw_status: Any, in_refund: bool = False) -> int:
     """将闲鱼返回的订单状态文本映射为内部状态码。"""
     if in_refund:
-        return 2
+        return 6
     status_text = _text(raw_status)
-    return _ORDER_STATUS_MAP.get(status_text, 1)
+    return _ORDER_STATUS_MAP.get(status_text, 6)
 
 
 def _parse_order_time(value: Any) -> Optional[datetime.datetime]:

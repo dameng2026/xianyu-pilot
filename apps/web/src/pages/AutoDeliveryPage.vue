@@ -150,9 +150,10 @@
                 <h3>配置自动发货</h3>
                 <p class="subtle">商品：{{ configTarget.goods.title }}（ID：{{ configTarget.goods.id }}）</p>
               </div>
-              <button class="config-modal-close" type="button" aria-label="关闭" @click="closeConfig">×</button>
+              <button class="config-modal-close" type="button" aria-label="关闭" :disabled="configSaving || skuSaving" @click="closeConfig">×</button>
             </div>
 
+          <fieldset class="config-edit-fields" :disabled="configSaving || skuSaving">
           <div class="config-tabs">
             <button v-for="timing in configTimings" :key="timing.key" :class="['config-tab', { active: configTiming === timing.key }]" @click="switchTiming(timing.key)">
               {{ timing.label }}
@@ -166,7 +167,7 @@
             <div class="form-section">
               <div class="form-section-title">
                 多规格发货配置
-                <span class="subtle" v-if="skuList.length">（共 {{ skuList.length }} 个 SKU）</span>
+                <span v-if="skuList.length" class="subtle">（共 {{ skuList.length }} 个 SKU）</span>
               </div>
               <p v-if="skuError" class="danger-text">{{ skuError }}</p>
               <p v-else-if="!skuList.length && !skuLoading" class="subtle">该商品暂无 SKU 数据。</p>
@@ -235,7 +236,7 @@
                       <div class="form-row">
                         <label>自动确认发货</label>
                         <label class="checkbox-label">
-                          <input type="checkbox" v-model="rule[timing.key].autoConfirmShipment" />
+                          <input v-model="rule[timing.key].autoConfirmShipment" type="checkbox" />
                           发送成功后确认发货
                         </label>
                       </div>
@@ -323,6 +324,8 @@
                   placeholder="每行一条卡密，支持换行录入；例如：&#10;CARD-AAAA-BBBB&#10;CARD-CCCC-DDDD&#10;支持 ---- 或逗号分隔卡号和密码"
                 ></textarea>
                 <span class="subtle">已录入 <b>{{ cardKeyCount }}</b> 条卡密，保存后将自动创建卡密分组并入库，归属于当前商品「{{ configTarget.goods.title }}」。用户付款后系统将自动发放一张卡密并扣减库存。</span>
+                <p v-if="configForm._directImportGroupId" class="global-notice warn">已创建卡密分组 #{{ configForm._directImportGroupId }}。再次保存会在该分组继续导入，不会重新建组；已有入库内容可在卡密仓库核对。</p>
+                <p v-if="configForm._directImportCreateUnknown" class="global-notice warn">分组创建结果不明。请先在卡密仓库核对，确认后选择已有分组；本次不会自动重复创建。</p>
               </div>
 
               <div class="form-row">
@@ -385,9 +388,9 @@
               </div>
             </div>
           </div>
-
+          </fieldset>
           <div class="config-modal-footer">
-            <AppButton @click="closeConfig">取消</AppButton>
+            <AppButton :disabled="configSaving || skuSaving" @click="closeConfig">取消</AppButton>
             <AppButton v-if="configTiming === 'skuRules'" type="primary" :loading="skuSaving" @click="saveSkuRules">保存 SKU 配置</AppButton>
             <AppButton v-else type="primary" :loading="configSaving" :disabled="configSaveDisabled" @click="saveConfig">保存配置</AppButton>
           </div>
@@ -476,6 +479,7 @@ import {
 } from '../api/autoDelivery.js'
 import { accountName } from '../utils/format.js'
 import { recordsOf } from '../utils/apiData.js'
+import { importDeliveryCards } from '../utils/deliveryCardImport.js'
 
 const emit = defineEmits(['navigate'])
 const AUTO_DELIVERY_FOCUS_GOODS_KEY = 'xya:auto-delivery-focus-goods-id'
@@ -614,6 +618,7 @@ const configSaveDisabled = computed(() => {
   if (!configTarget.value) return true
   if (configTarget.value.goods?._configUnavailable) return true
   if (configForm.mode === 'card') {
+    if (configForm.cardSource === 'direct' && configForm._directImportCreateUnknown) return true
     if (configForm.cardSource === 'existing' && cardGroupsAvailable.value === false) return true
     if (configForm.cardSource === 'existing' && !configForm.cardGroupId) return true
     if (configForm.cardSource === 'direct' && cardKeyCount.value === 0) return true
@@ -850,6 +855,8 @@ function resetFilter() {
 
 function fillConfigForm(config = {}) {
   Object.assign(configForm, {
+    _directImportGroupId: null,
+    _directImportCreateUnknown: false,
     enabled: config.enabled !== undefined ? Number(config.enabled) : 1,
     mode: config.mode || 'text',
     sourceId: config.sourceId || '',
@@ -901,12 +908,14 @@ function openConfig(goods, timing) {
 }
 
 function switchTiming(timing) {
+  if (configSaving.value || skuSaving.value) return
   configTiming.value = timing
   if (timing === 'skuRules') return  // SKU 配置 tab 不复用主表单
   fillConfigForm(configTarget.value?.goods?._config?.[timing] || {})
 }
 
-function closeConfig() {
+function closeConfig(force = false) {
+  if ((configSaving.value || skuSaving.value) && force !== true) return
   configTarget.value = null
   skuList.value = []
   skuRules.value = []
@@ -1048,7 +1057,7 @@ function cleanSkuTimingForSave(cfg) {
 }
 
 async function saveConfig() {
-  if (!configTarget.value) return
+  if (!configTarget.value || configSaving.value || skuSaving.value) return
   if (configTarget.value.goods?._configUnavailable) {
     appendError('该商品发货配置状态未知，暂不允许保存。')
     return
@@ -1076,40 +1085,9 @@ async function saveConfig() {
     let cardGroupId = null
     if (configForm.mode === 'card') {
       if (configForm.cardSource === 'direct') {
-        const goods = configTarget.value.goods
-        const groupName = `商品-${goods.title || goods.id}-卡密组`
-        const groupRes = await createCard({
-          groupName,
-          cardType: 'unique',
-          alertThreshold: configForm.alertThreshold || 5,
-          status: 1,
-          remark: `由自动发货配置自动创建，归属商品ID：${goods.id}，标题：${goods.title || ''}`
+        cardGroupId = await importDeliveryCards(configForm, configTarget.value.goods, {
+          createGroup: createCard, importItems: batchCreateCardItems,
         })
-        cardGroupId = groupRes?.data?.id || groupRes?.id
-        if (!cardGroupId) {
-          throw new Error('创建卡密分组失败，未返回分组ID')
-        }
-        const lines = String(configForm.cardKeysText || '')
-          .split(/\n+/)
-          .map(s => s.trim())
-          .filter(Boolean)
-        const payload = lines.map(line => {
-          const sepIdx = line.indexOf('----')
-          if (sepIdx > 0) {
-            return { content: line, cardContent: line.slice(0, sepIdx), password: line.slice(sepIdx + 4) }
-          }
-          const commaIdx = line.indexOf(',')
-          if (commaIdx > 0) {
-            return { content: line, cardContent: line.slice(0, commaIdx), password: line.slice(commaIdx + 1) }
-          }
-          const tabIdx = line.indexOf('\t')
-          if (tabIdx > 0) {
-            return { content: line, cardContent: line.slice(0, tabIdx), password: line.slice(tabIdx + 1) }
-          }
-          return { content: line }
-        })
-        await batchCreateCardItems(cardGroupId, { items: payload })
-        configForm.cardGroupId = cardGroupId
         try {
           const cardRes = await getCards({ size: 200 })
           cardGroups.value = recordsOf(cardRes.data)
@@ -1138,7 +1116,7 @@ async function saveConfig() {
     })
     success.value = '配置已保存'
     await Promise.all([loadGoods(), loadStats()])
-    closeConfig()
+    closeConfig(true)
   } catch (e) {
     error.value = e.message || '保存失败'
   } finally {
@@ -1276,6 +1254,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.config-edit-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
 .page-head {
   margin-bottom: 10px;
 }

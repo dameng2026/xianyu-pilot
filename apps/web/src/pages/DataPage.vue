@@ -290,9 +290,7 @@ const quick = [
   { label: '发布新商品', key: 'product-publish', icon: '📦' },
   { label: '同步商品', key: 'products', icon: '🔄' },
   { label: '配置自动发货', key: 'auto-delivery', icon: '🚚' },
-  { label: '广告申请', key: 'ad-application', icon: '📢' },
   { label: '定时任务', key: 'scheduled-tasks', icon: '⏰' },
-  { label: '反馈建议', key: 'feedback', icon: '💬' },
   { label: 'AI 客服设置', key: 'settings-ai-cs', icon: '🤖' },
 ]
 

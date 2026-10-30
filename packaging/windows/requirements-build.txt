@@ -1,0 +1,4 @@
+# Downloaded only on the GitHub Windows runner. Not required by end users.
+# Application dependencies are separately installed from the existing hash lock.
+PySide6==6.12.0
+PyInstaller==6.22.3

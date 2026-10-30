@@ -1,7 +1,5 @@
-import base64
-import hashlib
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -9,18 +7,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL
 
 from app.core.file_secrets import resolve_file_secret_values
+from app.core.paths import data_directory
 
 API_DIR = Path(__file__).resolve().parents[2]
 MONOREPO_LAYOUT = API_DIR.parent.name.casefold() == "apps"
 ROOT_DIR = API_DIR.parent.parent if MONOREPO_LAYOUT else API_DIR
 ROOT_ENV_FILE = ROOT_DIR / ".env"
-DEFAULT_UPLOADS_DIR = (API_DIR.parent / "uploads" if MONOREPO_LAYOUT else API_DIR / "uploads").resolve()
 FILE_BACKED_SECRET_FIELDS = (
     "mysql_password",
     "mysql_app_password",
     "mysql_migration_password",
     "internal_api_token",
-    "commercial_backend_access_token",
     "jwt_secret",
     "cookie_crypto_secret",
     "admin_password_hash",
@@ -29,23 +26,20 @@ FILE_BACKED_SECRET_FIELDS = (
     "ai_provider_api_key",
 )
 OPTIONAL_FILE_BACKED_SECRET_FIELDS = (
-    "commercial_backend_access_token",
     "embedding_api_key",
     "ai_provider_api_key",
 )
 
 
 class Settings(BaseSettings):
+    runtime_mode: Literal["server", "desktop"] = "server"
+    desktop_port: int = Field(default=15177, ge=1024, le=65535)
     app_name: str = "xianyu-assistant-python"
     server_host: str = "127.0.0.1"
-    # Isolated local default. Production Compose explicitly overrides this
-    # with its private, unpublished container port (12401).
+    # Loopback-only native development default.
     server_port: int = 15177
 
-    db_path: str = "../dbdata/xianyu_assistant.db"  # kept for backward compat
-    uploads_dir: str = str(DEFAULT_UPLOADS_DIR)
-
-    # MySQL 配置（替换 SQLite）
+    # 原业务暂存配置：对应业务迁移完成后移除。
     mysql_host: str = "localhost"
     mysql_port: int = 3306
     mysql_user: str = "xianyu"
@@ -95,27 +89,23 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed to call the service directly.
     cors_allowed_origins: str = ""
 
-    # 商业后台反馈同步配置
-    # 桥接地址、访问令牌与前台引流地址均内置默认值（见 _BUILTIN_BRIDGE_DEFAULTS），
-    # 开源版用户下载部署后无需手动配置 token 即可直连商业版后端，使用广告申请、
-    # 反馈提交、动态获取广告等能力。环境变量可覆盖内置默认值。
-    commercial_backend_base_url: str = ""
-    commercial_backend_bridge_prefix: str = "/admin-api/open-source-bridge"
-    commercial_backend_health_path: str = "/admin-api/health"  # backward compat alias
-    commercial_backend_admin_health_path: str = "/admin-api/health"
-    commercial_backend_user_health_path: str = "/api/health"
-    commercial_backend_access_token: str = Field(default="", exclude=True, repr=False)
-    commercial_backend_access_token_file: str = Field(default="", exclude=True, repr=False)
-    commercial_backend_site_code: str = "open-source"
-    commercial_backend_site_name: str = "开源版"
-    commercial_backend_timeout_seconds: int = 15
-    # 三能力开关默认全部开启：商业版后端已通过幂等键与付费广告投放合约验证，
-    # 开源版开箱即用。如需关闭某项能力，可在 .env 中显式设为 false。
-    commercial_backend_mutation_idempotency_enabled: bool = True
-    commercial_backend_payment_idempotency_enabled: bool = True
-    commercial_backend_paid_ad_placement_enforced: bool = True
-    commercial_frontend_url: str = ""
-    commercial_admin_url: str = ""
+    @property
+    def is_desktop(self) -> bool:
+        return self.runtime_mode == "desktop"
+
+    @property
+    def desktop_data_path(self) -> Path:
+        return data_directory()
+
+    @property
+    def sqlite_path(self) -> Path:
+        return self.desktop_data_path / "app.sqlite3"
+
+    @property
+    def database_url(self) -> URL:
+        if self.is_desktop:
+            return URL.create("sqlite+aiosqlite", database=str(self.sqlite_path))
+        return self.mysql_runtime_url
 
     @property
     def mysql_runtime_url(self) -> URL:
@@ -157,10 +147,7 @@ class Settings(BaseSettings):
 
     @property
     def uploads_path(self) -> Path:
-        value = Path(self.uploads_dir).expanduser()
-        if not value.is_absolute():
-            value = API_DIR / value
-        return value.resolve()
+        return data_directory() / "uploads"
 
     jwt_secret: str = Field(
         default="xianyu-assistant-jwt-secret-key-2026-04-22-very-long-secret-for-hmac-sha",
@@ -215,9 +202,10 @@ class Settings(BaseSettings):
     xianyu_mtop_category_version: str = "2.0"
     xianyu_mtop_upload_url: str = "https://stream-upload.goofish.com/api/upload.api?floderId=0&appkey=xy_chat"
 
-    # Optional read-only local homepage-content fallback directory.
-    # Runtime mutations live in MySQL or the advertising bridge.
-    STORAGE_DIR: str = "../data"
+    @property
+    def STORAGE_DIR(self) -> str:
+        """Compatibility path for local file storage in the original services."""
+        return str(data_directory())
 
     # 自动分类置信度阈值
     # 注意：闲鱼官方 categoryPredictResult 已优先采用并跳过阈值检查，
@@ -237,9 +225,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024
     max_rag_document_bytes: int = 5 * 1024 * 1024
     # GitHub 仓库地址（owner/repo 格式），用于检查更新
-    github_repo: str = "dameng2026/XianYuPilo"
-    # 阿里云 ACR 镜像源（可选，留空则不展示此镜像源 tab）
-    acr_registry_url: str = ""
+    github_repo: str = "12-test-12/xianyu-pilot"
     # Only trust forwarded client IP headers when the direct socket peer is in
     # one of these comma-separated IPs/CIDRs.
     trusted_proxy_ips: str = ""
@@ -345,26 +331,6 @@ class Settings(BaseSettings):
             origins.append(origin.rstrip("/"))
         self.cors_allowed_origins = ",".join(dict.fromkeys(origins))
 
-        for field_name, value in {
-            "COMMERCIAL_BACKEND_BASE_URL": self.commercial_backend_base_url,
-            "COMMERCIAL_FRONTEND_URL": self.commercial_frontend_url,
-            "COMMERCIAL_ADMIN_URL": self.commercial_admin_url,
-        }.items():
-            normalized = (value or "").strip()
-            if not normalized:
-                continue
-            parsed = urlparse(normalized)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or not parsed.hostname
-                or parsed.username
-                or parsed.password
-                or parsed.fragment
-            ):
-                raise ValueError(f"{field_name} must be a valid HTTP(S) URL without credentials")
-            if self.is_production_like and parsed.scheme != "https":
-                raise ValueError(f"{field_name} must use HTTPS in prod/staging")
-
         if self.is_production_like:
             insecure_values = {
                 "please-change-this-to-a-random-32-char-string",
@@ -399,8 +365,6 @@ class Settings(BaseSettings):
                     raise ValueError(f"{role} password must be strong in prod/staging")
                 if (url.username or "").strip().casefold() in {"", "root", "mysql", "admin"}:
                     raise ValueError(f"{role} user must be a dedicated non-root account")
-            if self.commercial_backend_access_token and len(self.commercial_backend_access_token.strip()) < 32:
-                raise ValueError("COMMERCIAL_BACKEND_ACCESS_TOKEN must be at least 32 chars")
             if not self.trusted_hosts_list or "*" in self.trusted_hosts_list:
                 raise ValueError("TRUSTED_HOSTS must contain explicit hostnames in prod/staging")
             if not self.audit_mutation_intent_required:
@@ -425,6 +389,15 @@ class Settings(BaseSettings):
         del settings_cls
 
         def file_aware_settings() -> dict[str, Any]:
+            explicit = {**env_settings(), **init_settings()}
+            runtime_mode = explicit.get("runtime_mode", "server")
+            if runtime_mode == "desktop":
+                # Do not read the server dotenv, secret files, or inherited
+                # MySQL/Redis credentials in the desktop process.
+                values = {key: value for key, value in explicit.items()
+                          if key in {"runtime_mode", "desktop_port"}}
+                values.update(app_env="desktop", server_host="127.0.0.1")
+                return values
             # Source priority remains init > environment > dotenv > secrets_dir.
             merged: dict[str, Any] = {}
             for source in (
@@ -434,6 +407,8 @@ class Settings(BaseSettings):
                 init_settings,
             ):
                 merged.update(source())
+            # A server dotenv must never silently switch application modes.
+            merged["runtime_mode"] = runtime_mode
             return resolve_file_secret_values(
                 merged,
                 secret_fields=FILE_BACKED_SECRET_FIELDS,
@@ -450,78 +425,5 @@ class Settings(BaseSettings):
     )
 
 
-# 开源版内置商业桥接默认值：用户下载部署后无需配置即可直连商业版后端。
-# 敏感值（token、后端地址、前台引流地址）以混淆编码存储，运行时解码，不以明文出现在源码中。
-# 混淆方式：base64(XOR(plaintext, sha256(seed)))，仅防止随意查看，非密码学加密。
-# token 轮换时需重新生成编码值并同步商业版 .env.production 的 OPEN_SOURCE_BRIDGE_TOKEN。
-# 重新生成编码值的方法见本文件末尾的 _regenerate_bridge_encoding 函数。
-# 详见 .trae/rules/opensource-commercial-bridge-sync.md
-def _resolve_bridge_value(encoded: str, seed: str) -> str:
-    """运行时解码内置桥接默认值。"""
-    raw = base64.b64decode(encoded.encode("ascii"))
-    key = hashlib.sha256(seed.encode("utf-8")).digest()
-    return bytes(b ^ key[i % len(key)] for i, b in enumerate(raw)).decode("utf-8")
-
-
-_BRIDGE_ENC_TOKEN = "0U34kM8JkBvWvFRjcJp3cCsYy3XY+0TCFYEu4L9fAa/uV+y/6gG4A7ydeFx1vWorLRLvFP36QOwxrCPZoWh4oA=="
-_BRIDGE_ENC_BACKEND = "noGcALZ+NUyrnGCFtSMSZ3WsvzSbI7znFXRP"
-_BRIDGE_ENC_FRONTEND = "zVB6D3X4NZfv2QYII2yZz0TaNJanh3S97d8j"
-_BRIDGE_SEED_TOKEN = "xianyu.bridge.token.3a1c9786"
-_BRIDGE_SEED_BACKEND = "xianyu.backend.url.e1c1b20b"
-_BRIDGE_SEED_FRONTEND = "xianyu.frontend.url.e1896305"
-
-_BUILTIN_BRIDGE_DEFAULTS: dict[str, str] = {
-    "commercial_backend_base_url": _resolve_bridge_value(_BRIDGE_ENC_BACKEND, _BRIDGE_SEED_BACKEND),
-    "commercial_backend_access_token": _resolve_bridge_value(_BRIDGE_ENC_TOKEN, _BRIDGE_SEED_TOKEN),
-    "commercial_frontend_url": _resolve_bridge_value(_BRIDGE_ENC_FRONTEND, _BRIDGE_SEED_FRONTEND),
-}
-
-
-def _apply_builtin_bridge_defaults(target: "Settings") -> "Settings":
-    """Apply built-in commercial bridge defaults after env/file resolution.
-
-    This runs AFTER validate_security_defaults so the HTTPS-in-production check
-    does not reject the built-in HTTP backend URL. Env vars and secret files
-    always take precedence — defaults only fill in empty values.
-    """
-    if not (getattr(target, "commercial_backend_base_url", "") or "").strip():
-        target.commercial_backend_base_url = _BUILTIN_BRIDGE_DEFAULTS["commercial_backend_base_url"]
-    if not (getattr(target, "commercial_backend_access_token", "") or "").strip():
-        target.commercial_backend_access_token = _BUILTIN_BRIDGE_DEFAULTS["commercial_backend_access_token"]
-    if not (getattr(target, "commercial_frontend_url", "") or "").strip():
-        target.commercial_frontend_url = _BUILTIN_BRIDGE_DEFAULTS["commercial_frontend_url"]
-    return target
-
-
-def _regenerate_bridge_encoding(token: str, backend_url: str, frontend_url: str) -> dict[str, str]:
-    """生成新的混淆编码值，用于 token 轮换。
-
-    用法：
-      1. 调用本函数生成新的编码值与种子
-      2. 将输出更新到 _BRIDGE_ENC_* 和 _BRIDGE_SEED_* 常量
-      3. 同步更新商业版 .env.production 的 OPEN_SOURCE_BRIDGE_TOKEN
-    """
-    import secrets
-
-    new_seed_token = f"xianyu.bridge.token.{secrets.token_hex(4)}"
-    new_seed_backend = f"xianyu.backend.url.{secrets.token_hex(4)}"
-    new_seed_frontend = f"xianyu.frontend.url.{secrets.token_hex(4)}"
-
-    def _encode(plain: str, seed: str) -> str:
-        raw = plain.encode("utf-8")
-        key = hashlib.sha256(seed.encode("utf-8")).digest()
-        xored = bytes(b ^ key[i % len(key)] for i, b in enumerate(raw))
-        return base64.b64encode(xored).decode("ascii")
-
-    return {
-        "_BRIDGE_ENC_TOKEN": _encode(token, new_seed_token),
-        "_BRIDGE_ENC_BACKEND": _encode(backend_url, new_seed_backend),
-        "_BRIDGE_ENC_FRONTEND": _encode(frontend_url, new_seed_frontend),
-        "_BRIDGE_SEED_TOKEN": new_seed_token,
-        "_BRIDGE_SEED_BACKEND": new_seed_backend,
-        "_BRIDGE_SEED_FRONTEND": new_seed_frontend,
-    }
-
-
+# All settings pass validation before the application starts.
 settings = Settings()
-_apply_builtin_bridge_defaults(settings)

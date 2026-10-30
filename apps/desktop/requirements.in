@@ -1,0 +1,3 @@
+# Minimal demo host. Versions match the audited server lock; no database server SDKs.
+fastapi==0.139.0
+uvicorn==0.51.0

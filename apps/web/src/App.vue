@@ -149,10 +149,7 @@ const pageMap = {
   'scheduled-tasks': asyncPage(() => import('./pages/ScheduledTasksPage.vue')),
   'auto-reply': asyncPage(() => import('./pages/AutoReplyPage.vue')),
   'slider-solve-records': asyncPage(() => import('./pages/SliderSolveRecordsPage.vue')),
-  'remote-slider-api': asyncPage(() => import('./pages/RemoteSliderApiPage.vue')),
   logs: asyncPage(() => import('./pages/LogsPage.vue')),
-  feedback: asyncPage(() => import('./pages/FeedbackPage.vue')),
-  'ad-application': asyncPage(() => import('./pages/AdApplicationPage.vue')),
   'settings-notify': asyncPage(() => import('./pages/settings/NotifySettings.vue')),
   profile: asyncPage(() => import('./pages/ProfileCenterPage.vue'))
 }

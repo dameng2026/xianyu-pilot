@@ -32,6 +32,11 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
     __APP_BUILD_DATE__: JSON.stringify(buildDate)
   },
+  build: {
+    rollupOptions: {
+      input: { main: path.resolve(webRoot, 'index.html'), safety: path.resolve(webRoot, 'desktop-safety.html') },
+    },
+  },
   server: {
     port: webDevPort,
     strictPort: true,

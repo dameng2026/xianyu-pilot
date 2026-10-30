@@ -210,7 +210,7 @@ def _is_trusted_proxy(address: str) -> bool:
             if ip in ipaddress.ip_network(value, strict=False):
                 return True
         except ValueError:
-            logger.warning("Ignoring invalid TRUSTED_PROXY_IPS entry: %s", value)
+            logger.warning("Ignoring invalid TRUSTED_PROXY_IPS entry")
     return False
 
 

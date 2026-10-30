@@ -33,7 +33,6 @@ REQUIRED_FILE_SECRET_FIELDS = (
     *SECRET_FIELDS,
 )
 OPTIONAL_FILE_SECRET_FIELDS = (
-    "COMMERCIAL_BACKEND_ACCESS_TOKEN",
     "EMBEDDING_API_KEY",
     "AI_PROVIDER_API_KEY",
 )
@@ -349,38 +348,6 @@ def validate(values: dict[str, str], env_path: Path | None = None) -> Validation
     if not _valid_byte_size(values.get("CRAWLER_JSON_LIMIT", ""), 1_024, 1_048_576):
         report.error("CRAWLER_JSON_LIMIT", "must resolve to 1KB-1MB")
 
-    for key in (
-        "COMMERCIAL_FRONTEND_URL",
-        "COMMERCIAL_ADMIN_URL",
-        "COMMERCIAL_BACKEND_BASE_URL",
-    ):
-        if values.get(key, "").strip():
-            _validate_https_url(values[key], report, key)
-    if values.get("COMMERCIAL_BACKEND_ACCESS_TOKEN", "").strip() and not values.get(
-        "COMMERCIAL_BACKEND_BASE_URL", ""
-    ).strip():
-        report.error("COMMERCIAL_BACKEND_BASE_URL", "is required when COMMERCIAL_BACKEND_ACCESS_TOKEN is set")
-    if values.get("COMMERCIAL_BACKEND_ACCESS_TOKEN", "").strip() and values.get(
-        "COMMERCIAL_BACKEND_MUTATION_IDEMPOTENCY_ENABLED", ""
-    ).strip().lower() not in {"1", "true", "yes", "on"}:
-        report.error(
-            "COMMERCIAL_BACKEND_MUTATION_IDEMPOTENCY_ENABLED",
-            "must be enabled only after ad-application creation honors the same header/body idempotency key",
-        )
-    if values.get("COMMERCIAL_BACKEND_ACCESS_TOKEN", "").strip() and values.get(
-        "COMMERCIAL_BACKEND_PAYMENT_IDEMPOTENCY_ENABLED", ""
-    ).strip().lower() not in {"1", "true", "yes", "on"}:
-        report.error(
-            "COMMERCIAL_BACKEND_PAYMENT_IDEMPOTENCY_ENABLED",
-            "must be enabled only after create and close both honor the same header/body idempotency key",
-        )
-    if values.get("COMMERCIAL_BACKEND_ACCESS_TOKEN", "").strip() and values.get(
-        "COMMERCIAL_BACKEND_PAID_AD_PLACEMENT_ENFORCED", ""
-    ).strip().lower() not in {"1", "true", "yes", "on"}:
-        report.error(
-            "COMMERCIAL_BACKEND_PAID_AD_PLACEMENT_ENFORCED",
-            "must be enabled only after integration tests prove unpaid, closed, and expired ad orders cannot become active or appear in ad-serving responses",
-        )
     if values.get("EMBEDDING_API_KEY", "").strip():
         _validate_https_url(values.get("EMBEDDING_BASE_URL", ""), report, "EMBEDDING_BASE_URL")
     if values.get("AI_PROVIDER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:

@@ -10,7 +10,7 @@ from ..core.database import Base
 
 class XianyuAccount(Base):
     __tablename__ = "xianyu_account"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     platform = Column(String(50), nullable=True, default="xianyu", comment="平台: xianyu")
     external_uid = Column(String(200), nullable=True, comment="闲鱼external_uid")
     nickname = Column(String(200), nullable=True)
@@ -36,7 +36,7 @@ class XianyuAccount(Base):
 
 class XianyuAccountAuth(Base):
     __tablename__ = "xianyu_account_auth"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False)
     encrypted_cookie = Column(Text, nullable=True, comment="加密Cookie")
     encrypted_token = Column(Text, nullable=True, comment="加密Token")
@@ -56,7 +56,7 @@ class XianyuAccountAuth(Base):
 
 class XianyuAccountRuntime(Base):
     __tablename__ = "xianyu_account_runtime"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False)
     online_status = Column(SmallInteger, default=0, comment="1在线 0离线")
     ws_status = Column(SmallInteger, default=0, comment="1在线 0离线")
@@ -76,7 +76,7 @@ class XianyuAccountRuntime(Base):
 
 class XianyuGoods(Base):
     __tablename__ = "xianyu_goods"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True)
     goods_id = Column(String(100), nullable=True, comment="兼容旧商品ID字段")
     external_goods_id = Column(String(100), nullable=True, comment="闲鱼商品ID")
@@ -113,7 +113,7 @@ class XianyuGoods(Base):
 class XianyuGoodsEditSnapshot(Base):
     """商品编辑/发布快照（编辑回显兜底 + 售整自动上架重发，单租户精简版）。"""
     __tablename__ = "xianyu_goods_edit_snapshot"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False)
     external_goods_id = Column(String(128), nullable=False, comment="闲鱼商品itemId")
     snapshot_json = Column(JSON, nullable=False, comment="完整商品数据快照")
@@ -127,7 +127,7 @@ class XianyuGoodsEditSnapshot(Base):
 class XianyuGoodsSyncTask(Base):
     """商品同步任务表（单租户精简版，无 tenant_id）。"""
     __tablename__ = "xianyu_goods_sync_task"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     sync_id = Column(String(80), nullable=False, unique=True, comment="同步任务ID")
     account_id = Column(BigInteger, nullable=False)
     status = Column(String(30), nullable=False, default="queued", comment="queued/running/completed/failed")
@@ -149,7 +149,7 @@ class XianyuGoodsSyncTask(Base):
 
 class XianyuTradeOrder(Base):
     __tablename__ = "xianyu_trade_order"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True)
     external_order_id = Column(String(200), nullable=True, comment="闲鱼订单ID")
     order_status = Column(SmallInteger, default=0, comment="0待付款 1已付款 2待发货 3已发货 4已完成 5已关闭")
@@ -172,7 +172,7 @@ class XianyuTradeOrder(Base):
 
 class XianyuTradeOrderItem(Base):
     __tablename__ = "xianyu_trade_order_item"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     order_id = Column(BigInteger, nullable=False)
     goods_id = Column(BigInteger, nullable=True)
     goods_name = Column(String(300), nullable=True)
@@ -192,7 +192,7 @@ class XianyuTradeOrderItem(Base):
 
 class DeliveryRule(Base):
     __tablename__ = "delivery_rule"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True)
     rule_name = Column(String(200), nullable=True)
     goods_id = Column(BigInteger, nullable=True)
@@ -210,7 +210,7 @@ class DeliveryRule(Base):
 
 class CardGroup(Base):
     __tablename__ = "card_group"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     group_name = Column(String(200), nullable=False)
     group_type = Column(String(50), default="kami")
     total_count = Column(Integer, default=0)
@@ -225,7 +225,7 @@ class CardGroup(Base):
 
 class CardItem(Base):
     __tablename__ = "card_item"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     group_id = Column(BigInteger, nullable=False)
     card_key = Column(Text, nullable=False)
     card_value = Column(Text, nullable=True)
@@ -248,7 +248,7 @@ class CardItem(Base):
 class DeliveryRecord(Base):
     """发货记录实体，用于统计发货成功/失败/待处理"""
     __tablename__ = "delivery_record"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True, comment="关联xianyu_account.id")
     order_id = Column(BigInteger, nullable=True, comment="关联xianyu_trade_order.id")
     rule_id = Column(BigInteger, nullable=True, comment="关联delivery_rule.id")
@@ -277,7 +277,7 @@ class DeliveryRecord(Base):
 class Notification(Base):
     """系统通知实体"""
     __tablename__ = "notification"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     notification_type = Column(String(50), nullable=True, comment="通知类型")
     title = Column(String(300), nullable=True)
     content = Column(Text, nullable=True)
@@ -293,7 +293,7 @@ class Notification(Base):
 
 class XianyuConversation(Base):
     __tablename__ = "xianyu_conversation"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True)
     seller_external_uid = Column(String(64), nullable=True, comment="闲鱼卖家真实UID/unb")
     external_buyer_id = Column(String(200), nullable=True)
@@ -324,7 +324,7 @@ class XianyuConversation(Base):
 
 class XianyuMessage(Base):
     __tablename__ = "xianyu_message"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True)
     conversation_id = Column(BigInteger, nullable=True)
     session_id = Column(String(200), nullable=True, comment="会话session ID，用于关联xianyu_chat_message.s_id")
@@ -344,7 +344,7 @@ class XianyuChatMessage(Base):
     __table_args__ = (
         Index("idx_chat_msg_lookup", "account_id", "deleted", "s_id", "message_time"),
     )
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="闲鱼账号ID")
     seller_external_uid = Column(String(64), nullable=True, comment="闲鱼卖家真实UID/unb")
     pnm_id = Column(String(200), nullable=True, comment="消息唯一ID（去重）")
@@ -428,7 +428,7 @@ class MessageAutomationOutbox(Base):
 
 class AutoReplyRule(Base):
     __tablename__ = "auto_reply_rule"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True)
     rule_name = Column(String(200), nullable=True)
     match_type = Column(String(50), default="keyword", comment="keyword/ai/all")
@@ -445,7 +445,7 @@ class AutoReplyRule(Base):
 class AutoReplyLog(Base):
     """自动回复日志实体（同步商业版能力）。"""
     __tablename__ = "auto_reply_log"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True)
     conversation_id = Column(BigInteger, nullable=True)
     rule_id = Column(BigInteger, nullable=True)
@@ -464,7 +464,7 @@ class AutoReplyLog(Base):
 class QuickReplyTemplate(Base):
     """快捷回复模板：人工点击即插入到输入框的常用语，与自动回复规则解耦"""
     __tablename__ = "quick_reply_template"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=True, comment="NULL 表示通用")
     title = Column(String(200), nullable=False, comment="模板标题")
     content = Column(Text, nullable=False, comment="模板内容")
@@ -477,7 +477,7 @@ class QuickReplyTemplate(Base):
 
 class XianyuOperationLog(Base):
     __tablename__ = "operation_log"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     operator = Column(String(100), nullable=True, comment="操作人")
     operation_type = Column(String(100), nullable=True)
     operation_desc = Column(Text, nullable=True)
@@ -503,7 +503,7 @@ class XianyuSysSetting(Base):
 class XianyuRemoteSliderSolveRecord(Base):
     """远程滑块求解记录：调用商业版远程 API 的求解记录。"""
     __tablename__ = "xianyu_remote_slider_solve_record"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     request_id = Column(String(64), nullable=False, unique=True)
     account_id = Column(BigInteger, nullable=True)
     account_name = Column(String(128), nullable=True)
@@ -538,7 +538,7 @@ class XianyuAiProvider(Base):
 class ModelConfig(Base):
     """AI 模型配置（聊天 / 文生图 等多模态模型统一管理）"""
     __tablename__ = "model_config"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     model_name = Column(String(200), nullable=False, comment="模型显示名称")
     provider = Column(String(100), nullable=True, comment="供应商: openai/azure/qwen/doubao 等")
     model_type = Column(String(50), default="chat", comment="chat/image/embedding")
@@ -557,7 +557,7 @@ class ModelConfig(Base):
 class ModelConfigImagePrompt(Base):
     """文生图模型配套提示词模板"""
     __tablename__ = "model_config_image_prompt"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     model_config_id = Column(BigInteger, nullable=False, comment="关联 model_config.id")
     prompt_name = Column(String(200), nullable=False, comment="提示词模板名称")
     prompt_content = Column(Text, nullable=True, comment="正向提示词")
@@ -576,7 +576,7 @@ class ModelConfigImagePrompt(Base):
 class RagKnowledgeBase(Base):
     """RAG 知识库"""
     __tablename__ = "rag_knowledge_base"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     name = Column(String(200), nullable=False, comment="知识库名称")
     description = Column(Text, nullable=True, comment="描述说明")
     embedding_model = Column(String(200), nullable=True, comment="向量模型名")
@@ -593,7 +593,7 @@ class RagKnowledgeBase(Base):
 class RagDocument(Base):
     """RAG 文档"""
     __tablename__ = "rag_document"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     kb_id = Column(BigInteger, nullable=False, comment="关联 rag_knowledge_base.id")
     file_name = Column(String(500), nullable=True, comment="文件名")
     file_url = Column(Text, nullable=True, comment="文件URL")
@@ -610,7 +610,7 @@ class RagDocument(Base):
 class RagChunk(Base):
     """RAG 文档分块及向量"""
     __tablename__ = "rag_chunk"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     kb_id = Column(BigInteger, nullable=False, comment="关联 rag_knowledge_base.id")
     doc_id = Column(BigInteger, nullable=False, comment="关联 rag_document.id")
     chunk_index = Column(Integer, default=0, comment="分块序号")
@@ -627,7 +627,7 @@ class RagChunk(Base):
 class SensitiveWord(Base):
     """敏感词库（消息内容过滤）"""
     __tablename__ = "sensitive_word"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     word = Column(String(200), nullable=False, comment="敏感词")
     category = Column(String(50), nullable=True, comment="分类: politics/porn/ad/privacy 等")
     replace_to = Column(String(200), nullable=True, comment="替换为（为空则直接拦截）")
@@ -648,7 +648,7 @@ class ScheduledTask(Base):
     API/Worker 启动只校验版本，不会自动修复模型与数据库之间的偏差。
     """
     __tablename__ = "scheduled_task"
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     task_name = Column(String(200), nullable=True, comment="任务名称")
     task_type = Column(String(80), nullable=True, comment="sync_goods/sync_orders")
     cron_expr = Column(String(120), nullable=True, comment="cron 表达式")
@@ -676,7 +676,7 @@ class ManualDeliveryAttempt(Base):
         Index("idx_manual_delivery_attempt_state_lease", "state", "lease_until"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     order_id = Column(BigInteger, nullable=False)
     account_id = Column(BigInteger, nullable=False)
     external_order_id = Column(String(200), nullable=False)
@@ -756,7 +756,7 @@ class RealtimeDeliveryAttempt(Base):
         Index("idx_realtime_delivery_attempt_record", "delivery_record_id"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     event_key = Column(String(64), nullable=False)
     account_id = Column(BigInteger, nullable=False)
     external_order_id = Column(String(200), nullable=True)
@@ -849,7 +849,7 @@ class AiAutoReplyDailyQuota(Base):
         Index("idx_ai_reply_quota_date", "quota_date"),
     )
 
-    account_id = Column(BigInteger, primary_key=True)
+    account_id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
     quota_date = Column(Date, primary_key=True)
     occupied_count = Column(Integer, nullable=False, default=0)
     consumed_count = Column(Integer, nullable=False, default=0)
@@ -868,7 +868,7 @@ class RemoteGoodsDeleteAttempt(Base):
         Index("idx_remote_goods_delete_attempt_state_lease", "state", "lease_until"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     goods_id = Column(BigInteger, nullable=False)
     account_id = Column(BigInteger, nullable=False)
     external_goods_id = Column(String(200), nullable=False)
@@ -897,7 +897,7 @@ class GoodsOffShelfAttempt(Base):
         Index("idx_goods_off_shelf_state_lease", "state", "lease_until"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     goods_id = Column(BigInteger, nullable=False)
     account_id = Column(BigInteger, nullable=False)
     external_goods_id = Column(String(200), nullable=False)
@@ -961,66 +961,6 @@ class ExternalOperationAttempt(Base):
     updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
-class AdPaymentOrderTargetMutex(Base):
-    """One lock row per commercial application across payment generations."""
-
-    __tablename__ = "ad_payment_order_target_mutex"
-    __table_args__ = (
-        Index("idx_ad_payment_target_latest", "latest_attempt_id"),
-    )
-
-    application_id = Column(BigInteger, primary_key=True)
-    latest_attempt_id = Column(BigInteger, nullable=True)
-    created_time = Column(DateTime, default=func.now())
-    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
-
-
-class AdPaymentOrderAttempt(Base):
-    """Durable generation state for commercial payment-order creation."""
-
-    __tablename__ = "ad_payment_order_attempt"
-    __table_args__ = (
-        UniqueConstraint(
-            "idempotency_key",
-            name="uk_ad_payment_order_attempt_key",
-        ),
-        UniqueConstraint(
-            "remote_order_no",
-            name="uk_ad_payment_order_attempt_remote_order",
-        ),
-        Index(
-            "idx_ad_payment_order_application_created",
-            "application_id",
-            "created_time",
-            "id",
-        ),
-        Index("idx_ad_payment_order_state_lease", "state", "lease_until"),
-    )
-
-    id = Column(
-        BigInteger().with_variant(Integer, "sqlite"),
-        primary_key=True,
-        autoincrement=True,
-    )
-    application_id = Column(BigInteger, nullable=False)
-    idempotency_key = Column(String(128), nullable=False)
-    payload_digest = Column(String(64), nullable=False)
-    payment_method = Column(String(64), nullable=False)
-    state = Column(String(32), nullable=False, default="pending")
-    retry_safe = Column(SmallInteger, nullable=False, default=1)
-    attempt_count = Column(Integer, nullable=False, default=0)
-    lease_token = Column(String(64), nullable=True)
-    lease_until = Column(DateTime, nullable=True)
-    remote_started_at = Column(DateTime, nullable=True)
-    remote_confirmed_at = Column(DateTime, nullable=True)
-    remote_order_no = Column(String(128), nullable=True)
-    remote_status = Column(String(32), nullable=True)
-    last_error_code = Column(String(64), nullable=True)
-    error_message = Column(String(500), nullable=True)
-    created_time = Column(DateTime, default=func.now())
-    updated_time = Column(DateTime, default=func.now(), onupdate=func.now())
-
-
 class NotificationTestTargetMutex(Base):
     """Serialize test sends for one saved notification channel."""
 
@@ -1029,7 +969,7 @@ class NotificationTestTargetMutex(Base):
         Index("idx_notification_test_target_latest", "latest_attempt_id"),
     )
 
-    user_id = Column(BigInteger, primary_key=True)
+    user_id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
     channel_key = Column(String(80), primary_key=True)
     latest_attempt_id = Column(
         BigInteger,
@@ -1151,7 +1091,7 @@ class NotificationEventTargetMutex(Base):
     )
 
     event_type = Column(String(64), primary_key=True)
-    account_id = Column(BigInteger, primary_key=True)
+    account_id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True)
     target_digest = Column(String(64), primary_key=True)
     latest_attempt_id = Column(
         BigInteger,
@@ -1175,7 +1115,7 @@ class AdminUser(Base):
 
     __tablename__ = "admin_user"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     username = Column(String(100), nullable=False, unique=True, index=True)
     email = Column(String(200), nullable=True, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
@@ -1194,7 +1134,7 @@ class XianyuRefund(Base):
 
     __tablename__ = "xianyu_refund"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号 ID")
     external_refund_id = Column(String(64), nullable=False, comment="闲鱼退款 ID")
     external_order_id = Column(String(64), nullable=True, comment="订单 ID")
@@ -1233,7 +1173,7 @@ class XianyuRefundSyncTask(Base):
 
     __tablename__ = "xianyu_refund_sync_task"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     sync_id = Column(String(80), nullable=False, comment="同步任务 ID")
     account_id = Column(BigInteger, nullable=True, comment="账号 ID（NULL=全部账号）")
     scope = Column(String(20), nullable=False, default="single", comment="single/all")
@@ -1258,7 +1198,7 @@ class XianyuRefundAccountState(Base):
 
     __tablename__ = "xianyu_refund_account_state"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="闲鱼账号 ID")
     last_sync_time = Column(DateTime, nullable=True)
     last_sync_status = Column(String(30), nullable=True, comment="success/failed/partial")
@@ -1285,7 +1225,7 @@ class XianyuAccountMembership(Base):
         Index("idx_membership_level", "level"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号 ID")
     level = Column(String(20), nullable=False, default="normal", comment="会员等级：normal/vip/svip")
     expired_time = Column(DateTime, nullable=True, comment="过期时间（NULL 表示永久）")
@@ -1304,7 +1244,7 @@ class XianyuGoodsProperty(Base):
 
     __tablename__ = "xianyu_goods_property"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号 ID")
     goods_id = Column(BigInteger, nullable=False, comment="关联 xianyu_goods.id")
     property_name = Column(String(100), nullable=False, comment="规格名称（颜色/尺码等）")
@@ -1317,7 +1257,7 @@ class XianyuGoodsPropertyValue(Base):
 
     __tablename__ = "xianyu_goods_property_value"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     property_id = Column(BigInteger, nullable=False, comment="关联 xianyu_goods_property.id")
     value_name = Column(String(200), nullable=False, comment="规格值（红/蓝/S/M等）")
     created_time = Column(DateTime, default=func.now())
@@ -1329,7 +1269,7 @@ class XianyuGoodsSku(Base):
 
     __tablename__ = "xianyu_goods_sku"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号 ID")
     goods_id = Column(BigInteger, nullable=False, comment="关联 xianyu_goods.id")
     sku_id = Column(String(64), nullable=False, comment="闲鱼 SKU ID")
@@ -1358,7 +1298,7 @@ class XianyuRate(Base):
         Index("idx_rate_sync_status", "account_id", "sync_status"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="所属闲鱼账号ID")
     external_order_id = Column(String(64), nullable=False, comment="订单ID（字符串存储）")
     external_item_id = Column(String(64), nullable=True, comment="商品ID")
@@ -1401,7 +1341,7 @@ class XianyuRateSyncTask(Base):
 
     __tablename__ = "xianyu_rate_sync_task"
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     sync_id = Column(String(80), nullable=False, comment="同步任务ID（唯一）")
     account_id = Column(BigInteger, nullable=True, comment="账号ID（NULL=全部账号）")
     scope = Column(String(20), nullable=False, default="single", comment="single/all")
@@ -1429,7 +1369,7 @@ class XianyuRateAccountState(Base):
         UniqueConstraint("account_id", name="uk_rate_state_account"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="闲鱼账号ID")
     last_sync_time = Column(DateTime, nullable=True)
     last_sync_status = Column(String(30), nullable=True, comment="success/failed/partial")
@@ -1452,7 +1392,7 @@ class XianyuAccountAutoRateConfig(Base):
         Index("idx_xyaarc_enabled_hour", "enabled", "schedule_hour", "deleted"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="闲鱼账号ID")
     enabled = Column(SmallInteger, nullable=False, default=0, comment="是否启用自动评价")
     rate_type = Column(String(20), nullable=False, default="text", comment="text=固定文本 api=API模式")
@@ -1473,7 +1413,7 @@ class XianyuAutoRateLog(Base):
         Index("idx_arl_status", "status", "deleted"),
     )
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    id = Column(BigInteger().with_variant(Integer(), "sqlite"), primary_key=True, autoincrement=True)
     account_id = Column(BigInteger, nullable=False, comment="闲鱼账号ID")
     run_time = Column(DateTime, nullable=False, comment="本次执行时间")
     schedule_hour = Column(Integer, nullable=True, comment="配置的执行时间（手动触发为NULL）")

@@ -258,84 +258,20 @@ async def download_trusted_origin_image(
     *,
     max_bytes: int | None = None,
     timeout_seconds: float = 15,
-    client: httpx.AsyncClient | None = None,
 ) -> tuple[bytes, str]:
-    """Download one image from a configured origin without redirects/proxies.
-
-    This is for the optional commercial uploads bridge, whose origin is an
-    administrator-controlled setting. The payload is still bounded, requires
-    an allowlisted raster MIME, is decoded, and is re-encoded before it can be
-    cached or served to a browser.
-    """
-
-    parsed = urlparse(str(url or "").strip())
-    if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.fragment
-    ):
-        raise UnsafeRemoteURLError("商业图片回源地址无效")
-
-    limit = int(max_bytes or settings.max_upload_bytes)
-    timeout = httpx.Timeout(float(timeout_seconds), connect=min(float(timeout_seconds), 5.0))
-
-    async def _download(active_client: httpx.AsyncClient) -> tuple[bytes, str]:
-        async with active_client.stream("GET", url, follow_redirects=False) as response:
-            if 300 <= response.status_code < 400:
-                raise UnsafeRemoteURLError("商业图片回源拒绝重定向")
-            if response.status_code == 404:
-                raise FileNotFoundError("商业图片不存在")
-            if response.status_code != 200:
-                raise UploadValidationError("商业图片回源暂不可用")
-
-            declared_type = (
-                response.headers.get("content-type", "")
-                .split(";", 1)[0]
-                .strip()
-                .lower()
-            )
-            if declared_type == "image/jpg":
-                declared_type = "image/jpeg"
-            if declared_type not in SAFE_IMAGE_MEDIA_TYPES:
-                raise UploadValidationError("商业图片回源返回了不安全的内容类型")
-
-            raw_length = response.headers.get("content-length")
-            try:
-                declared_size = int(raw_length) if raw_length else None
-            except ValueError as exc:
-                raise UploadValidationError("商业图片大小信息无效") from exc
-            if declared_size is not None and (declared_size <= 0 or declared_size > limit):
-                raise UploadValidationError(f"图片不能超过 {limit // 1024 // 1024}MB")
-
-            chunks: list[bytes] = []
-            total = 0
-            async for chunk in response.aiter_bytes(64 * 1024):
-                total += len(chunk)
-                if total > limit:
-                    raise UploadValidationError(f"图片不能超过 {limit // 1024 // 1024}MB")
-                chunks.append(chunk)
-
-        raw = b"".join(chunks)
-        _, detected_type = await asyncio.to_thread(validate_image_bytes, raw)
-        if detected_type != declared_type:
-            raise UploadValidationError("商业图片声明类型与实际内容不一致")
-        normalized, _, normalized_type = await asyncio.to_thread(
-            normalize_image_bytes,
-            raw,
-            max_bytes=limit,
+    """Fetch and normalize a bounded image through DNS-pinned public HTTPS."""
+    try:
+        raw = await download_public_image(
+            url, max_bytes=max_bytes, timeout_seconds=timeout_seconds, allow_redirects=False,
         )
-        return normalized, normalized_type
-
-    if client is not None:
-        return await _download(client)
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=False,
-        trust_env=False,
-    ) as owned_client:
-        return await _download(owned_client)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise FileNotFoundError("商业图片不存在") from exc
+        raise UploadValidationError("商业图片回源暂不可用") from exc
+    normalized, _, media_type = await asyncio.to_thread(
+        normalize_image_bytes, raw, max_bytes=max_bytes,
+    )
+    return normalized, media_type
 
 
 def _is_public_ip(value: str) -> bool:
@@ -420,6 +356,7 @@ async def request_public_https(
     content: bytes | str | None = None,
     headers: Mapping[str, str] | None = None,
     timeout_seconds: float = 10,
+    timeout: httpx.Timeout | None = None,
     max_request_bytes: int = 256 * 1024,
     max_response_bytes: int = 64 * 1024,
 ) -> PublicHTTPResponse:
@@ -446,7 +383,7 @@ async def request_public_https(
         url,
         require_https=True,
     )
-    timeout = httpx.Timeout(timeout_value, connect=min(timeout_value, 5.0))
+    timeout = timeout or httpx.Timeout(timeout_value, connect=min(timeout_value, 5.0))
     last_connection_error: httpx.HTTPError | None = None
 
     for target in targets:
@@ -540,14 +477,18 @@ def validate_public_https_url(url: str) -> str:
     return _resolve_public_image_targets(url, require_https=True)[0].original_url
 
 
-async def download_public_image(url: str, max_bytes: int | None = None) -> bytes:
+async def download_public_image(
+    url: str, max_bytes: int | None = None, *, timeout_seconds: float = 30,
+    allow_redirects: bool = True,
+) -> bytes:
     targets = await asyncio.to_thread(
         _resolve_public_image_targets,
         url,
         require_https=True,
     )
     limit = int(max_bytes or settings.max_upload_bytes)
-    timeout = httpx.Timeout(30.0, connect=5.0)
+    timeout_value = max(3.0, min(float(timeout_seconds), 60.0))
+    timeout = httpx.Timeout(timeout_value, connect=min(timeout_value, 5.0))
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
         for redirect_count in range(4):
             redirect_url: str | None = None
@@ -564,6 +505,8 @@ async def download_public_image(url: str, max_bytes: int | None = None) -> bytes
                         extensions={"sni_hostname": target.sni_hostname},
                     ) as response:
                         if 300 <= response.status_code < 400:
+                            if not allow_redirects:
+                                raise UnsafeRemoteURLError("商业图片回源拒绝重定向")
                             location = response.headers.get("location")
                             if not location or redirect_count >= 3:
                                 raise UnsafeRemoteURLError("远程图片重定向次数过多或地址无效")

@@ -11,9 +11,7 @@ logger = logging.getLogger(__name__)
 
 DATA_FILE: str | Path = Path(settings.STORAGE_DIR) / "content_manage.json"
 MAX_CONTENT_FILE_BYTES = 1024 * 1024
-MAX_CAROUSELS = 100
 MAX_ANNOUNCEMENTS = 100
-MAX_COVERS_PER_CAROUSEL = 20
 
 
 def _bounded_text(value: object, limit: int) -> str:
@@ -42,61 +40,6 @@ def _bounded_bool(value: object, default: bool = True) -> bool:
     return default
 
 
-def _normalize_cover(source: dict[str, Any], fallback_index: int) -> dict[str, Any]:
-    source_type = _bounded_text(
-        source.get("sourceType") or source.get("source") or "url",
-        16,
-    ).casefold()
-    if source_type not in {"upload", "url"}:
-        source_type = "url"
-    return {
-        "id": _bounded_text(source.get("id") or f"cover-{fallback_index + 1}", 80),
-        "imageUrl": _bounded_text(
-            source.get("imageUrl") or source.get("url") or source.get("image"),
-            2048,
-        ),
-        "linkUrl": _bounded_text(source.get("linkUrl") or source.get("targetUrl"), 2048),
-        "title": _bounded_text(source.get("title"), 200),
-        "description": _bounded_text(source.get("description"), 2000),
-        "sourceType": source_type,
-        "sortOrder": _bounded_int(source.get("sortOrder"), fallback_index),
-        "enabled": _bounded_bool(source.get("enabled"), True),
-    }
-
-
-def _normalize_carousel(source: dict[str, Any], fallback_id: int) -> dict[str, Any]:
-    raw_covers = source.get("coverItems")
-    covers = [
-        _normalize_cover(item, index)
-        for index, item in enumerate(
-            raw_covers[:MAX_COVERS_PER_CAROUSEL]
-            if isinstance(raw_covers, list)
-            else []
-        )
-        if isinstance(item, dict)
-    ]
-    if not covers:
-        covers = [_normalize_cover(source, 0)]
-    covers = [item for item in covers if item["imageUrl"]]
-    primary = covers[0] if covers else _normalize_cover({}, 0)
-    return {
-        "id": _bounded_int(source.get("id"), fallback_id),
-        "title": _bounded_text(source.get("title") or primary["title"], 200),
-        "description": _bounded_text(
-            source.get("description") or primary["description"],
-            2000,
-        ),
-        "imageUrl": primary["imageUrl"],
-        "linkUrl": primary["linkUrl"],
-        "sourceType": primary["sourceType"],
-        "coverItems": covers,
-        "sortOrder": _bounded_int(source.get("sortOrder"), 0),
-        "enabled": _bounded_bool(source.get("enabled"), True),
-        "createdAt": _bounded_text(source.get("createdAt"), 64),
-        "updatedAt": _bounded_text(source.get("updatedAt"), 64),
-    }
-
-
 def _normalize_announcement(source: dict[str, Any], fallback_id: int) -> dict[str, Any]:
     return {
         "id": _bounded_int(source.get("id"), fallback_id),
@@ -119,17 +62,12 @@ def _validated_collection(payload: dict[str, Any], key: str) -> list[dict[str, A
 
 
 def load_local_home_content() -> dict[str, Any]:
-    """Read the optional, operator-managed local homepage fallback.
-
-    This seam is deliberately read-only. Runtime mutations belong in MySQL or
-    the commercial advertising bridge; API replicas must never race while
-    rewriting a shared JSON file.
-    """
+    """Read local announcements without rewriting the source file."""
 
     path = Path(DATA_FILE)
     try:
         if not path.exists():
-            return {"carousels": [], "announcements": [], "meta": {}}
+            return {"announcements": [], "meta": {}}
         with path.open("rb") as handle:
             raw = handle.read(MAX_CONTENT_FILE_BYTES + 1)
         if not raw or len(raw) > MAX_CONTENT_FILE_BYTES:
@@ -137,16 +75,11 @@ def load_local_home_content() -> dict[str, Any]:
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("content storage root must be an object")
-        raw_carousels = _validated_collection(payload, "carousels")
         raw_announcements = _validated_collection(payload, "announcements")
         meta = payload.get("meta", {})
         if not isinstance(meta, dict):
             raise ValueError("content storage meta must be an object")
         return {
-            "carousels": [
-                _normalize_carousel(item, index + 1)
-                for index, item in enumerate(raw_carousels[:MAX_CAROUSELS])
-            ],
             "announcements": [
                 _normalize_announcement(item, index + 1)
                 for index, item in enumerate(raw_announcements[:MAX_ANNOUNCEMENTS])

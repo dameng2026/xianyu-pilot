@@ -11,8 +11,6 @@ EMBEDDING_MODEL_API_KEY_PURPOSE = "system.embedding_model.api_key"
 MODEL_CONFIG_API_KEY_PURPOSE = "model_config.api_key"
 AI_PROVIDER_API_KEY_PURPOSE = "xianyu_ai_provider.api_key"
 RAG_EMBEDDING_API_KEY_PURPOSE = "rag_knowledge_base.embedding_api_key"
-FEEDBACK_STORE_PURPOSE = "frontend.feedback_store"
-AD_APPLICATION_STORE_PURPOSE = "frontend.ad_applications_store"
 REMOTE_SLIDER_API_KEY_PURPOSE = "remote_slider.api_key"
 
 SENSITIVE_SETTING_KEYS = frozenset(

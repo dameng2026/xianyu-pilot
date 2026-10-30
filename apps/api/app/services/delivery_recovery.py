@@ -370,37 +370,9 @@ async def _recover_one_order(
 
 
 async def _resurrect_dead_letter_attempts(db: AsyncSession, *, max_age_hours: int = 24) -> int:
-    """Revive attempts stuck in 'unknown' state for too long.
-
-    An attempt in 'unknown' state means the process died before confirming
-    the delivery result. After max_age_hours, we consider it safe to retry
-    by resetting it to 'failed' with retry_safe=1, so the recovery scan
-    picks it up again.
-
-    Returns the number of attempts resurrected.
-    """
-    result = await db.execute(
-        text(
-            """
-            UPDATE realtime_delivery_attempt
-            SET state = 'failed',
-                retry_safe = 1,
-                retry_scope = 'message',
-                last_error_code = 'unknown_resurrected',
-                error_message = '发送结果长时间未知，已转为可重试状态',
-                lease_token = NULL,
-                lease_until = NULL,
-                updated_time = NOW()
-            WHERE state = 'unknown'
-              AND created_time <= DATE_SUB(NOW(), INTERVAL :max_age_hours HOUR)
-            """
-        ),
-        {"max_age_hours": int(max_age_hours)},
-    )
-    resurrected = result.rowcount or 0
-    if resurrected > 0:
-        logger.info("resurrected dead letter attempts count=%d", resurrected)
-    return resurrected
+    """Compatibility hook. Elapsed time is not evidence that a send failed."""
+    del db, max_age_hours
+    return 0
 
 
 async def run_delivery_recovery_once(
@@ -430,7 +402,7 @@ async def run_delivery_recovery_once(
         "details": [],
     }
 
-    # 先复活长时间卡在 unknown 状态的 attempt，使其可被补发扫描捡起
+    # 兼容恢复钩子保持只读；unknown 不得随时间变成可重试。
     try:
         async with async_session() as heal_db:
             resurrected = await _resurrect_dead_letter_attempts(heal_db)
@@ -440,7 +412,7 @@ async def run_delivery_recovery_once(
     except Exception as exc:
         logger.warning("delivery_recovery dead letter resurrection failed: %s", exc)
 
-    # 恢复孤儿卡密认领（进程崩溃导致的 status=1 但 attempt 已终态的卡密）
+    # 终态不能证明未发送；兼容钩子保留占用供人工核对。
     try:
         from .realtime_delivery import heal_orphaned_card_claims
         async with async_session() as heal_db:

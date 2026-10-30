@@ -16,11 +16,7 @@ from ....models.entities import (
     XianyuSysSetting,
 )
 from ....services.ai_provider import invalidate_model_config_cache, is_ai_configured
-from ....services.commercial_bridge import (
-    default_about_content,
-    get_commercial_bridge_runtime,
-    proxy_get_about_content,
-)
+from ....services.personal_content import about_content
 from ....services.open_source_config import (
     build_public_open_source_config,
     load_open_source_config,
@@ -301,7 +297,7 @@ async def get_about_content(
     current_user: dict = Depends(get_current_user),
 ):
     del db, current_user
-    content = await proxy_get_about_content()
+    content = about_content()
     return ResultObject.success(content)
 
 
@@ -354,7 +350,6 @@ async def get_runtime_status(
 ):
     config = await load_open_source_config(db)
     del current_user
-    commercial_runtime = await get_commercial_bridge_runtime()
 
     db_connected = False
     db_version = ""
@@ -393,18 +388,6 @@ async def get_runtime_status(
         "redisMemory": redis_memory,
         "redisMode": redis_mode,
         "crawlerBaseUrl": settings.crawler_base_url,
-        "commercialBridgeConfigured": bool(commercial_runtime.get("commercialBridgeConfigured")),
-        "commercialBridgeConnected": bool(commercial_runtime.get("commercialBridgeConnected")),
-        "commercialBridgeMode": commercial_runtime.get("commercialBridgeMode") or "local-fallback",
-        "commercialBridgeHealthOk": bool(commercial_runtime.get("commercialBridgeHealthOk")),
-        "commercialAdminHealthOk": bool(commercial_runtime.get("commercialAdminHealthOk")),
-        "commercialUserHealthOk": bool(commercial_runtime.get("commercialUserHealthOk")),
-        "commercialPaidAdPlacementEnforced": bool(
-            commercial_runtime.get("commercialPaidAdPlacementEnforced")
-        ),
-        "commercialBridgeSiteCode": commercial_runtime.get("commercialBridgeSiteCode") or "",
-        "commercialBridgeMessage": commercial_runtime.get("commercialBridgeMessage") or "",
-        "commercialFrontendUrl": commercial_runtime.get("commercialFrontendUrl") or "",
         "generalModelConfigured": is_ai_configured(general_model),
         "embeddingModelConfigured": is_ai_configured(embedding_model),
     })

@@ -1523,7 +1523,7 @@ async def create_card_group(
     if not group_name:
         return ResultObject.validate_failed("分组名称不能为空")
 
-    await db.execute(
+    result = await db.execute(
         text(
             """
             INSERT INTO card_group(
@@ -1547,8 +1547,12 @@ async def create_card_group(
             "status": 1 if _to_int(body.get("status"), 1) == 1 else 0,
         },
     )
+    group_id = _to_int(result.lastrowid)
+    if group_id <= 0:
+        await db.rollback()
+        return ResultObject.failed("无法确认新建卡密分组，创建已回滚，请重试")
     await db.commit()
-    return ResultObject.success(None, "卡密分组已创建")
+    return ResultObject.success(group_id, "卡密分组已创建")
 
 
 @router.put("/cards/{group_id}", response_model=ResultObject)

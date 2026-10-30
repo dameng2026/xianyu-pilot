@@ -13,6 +13,7 @@ import re
 import time
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.exc import IntegrityError
@@ -146,9 +147,19 @@ def _extract_item_main_pic(value: object) -> str:
 
     # 兜底1：在 extensions 中搜索任何 alicdn/taobao 图片 URL
     for val in extensions.values():
-        if isinstance(val, str) and ("alicdn.com" in val or "img.taobao" in val):
+        if isinstance(val, str):
             normalized = _normalize_image_url(val)
-            if normalized:
+            try:
+                parsed = urlparse(normalized)
+                host = (parsed.hostname or '').lower()
+            except ValueError:
+                continue
+            if (
+                parsed.scheme in {'http', 'https'}
+                and not parsed.username and not parsed.password
+                and (host == 'alicdn.com' or host.endswith('.alicdn.com')
+                     or host == 'img.taobao.com')
+            ):
                 return normalized
 
     # 兜底2：从 complete_msg 文本中正则提取图片 URL

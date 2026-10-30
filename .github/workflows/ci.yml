@@ -1,0 +1,89 @@
+name: CI and Native Release
+
+on:
+  push:
+    branches: [main, 'codex/**']
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish a verified native source bundle (main or version tags only)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/codex/') }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    name: Build and regressions
+    uses: ./.github/workflows/ci-checks.yml
+    permissions:
+      contents: read
+
+  audits:
+    name: Security audits
+    uses: ./.github/workflows/security-audits.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  quality-gate:
+    name: Quality gate
+    if: always()
+    needs: [checks, audits]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Require every test, package check and audit to pass
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python scripts/ci/gates.py jobs checks audits
+
+  publish-release:
+    name: Publish verified native source bundle
+    needs: quality-gate
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish_release == true))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          name: xianyu-pilot-native-source
+          path: release
+      - name: Reverify package, revision, run and every file before publishing
+        run: python scripts/ci/native_package.py verify --directory release
+      - name: Publish verified ZIP and checksum to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python scripts/ci/native_package.py publish --directory release

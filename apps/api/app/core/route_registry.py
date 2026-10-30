@@ -328,11 +328,6 @@ RETIRED_SURFACES = (
         "伪造全健康账号指标已移除；请使用真实账号状态列表。",
     ),
     RetiredSurface(
-        "POST",
-        "/api/ads/payment/orders/{order_no}/mock-pay",
-        "模拟支付接口已移除；请配置真实商业支付桥，并以商业服务返回的订单状态为准。",
-    ),
-    RetiredSurface(
         "GET",
         "/api/publish-address/history",
         "发布地址历史功能已移除：当前版本没有对应的持久化模型；发布时仍可通过地图搜索选择本次地址。",

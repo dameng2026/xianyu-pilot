@@ -1,0 +1,61 @@
+.workflow-nav { display: grid; gap: 8px; }
+.workflow-nav button { display: flex; justify-content: space-between; align-items: center; border: 1px solid transparent; border-radius: 8px; padding: 13px 14px; background: transparent; color: #adc5b9; text-align: left; }
+.workflow-nav button.current { background: #2a5048; border-color: #3b6156; color: #edf6e6; }
+.workflow-nav button span { font-size: 10px; color: #d4eb91; }
+.mobile-nav { display: none; }
+.management-grid { display: grid; grid-template-columns: minmax(290px, .9fr) minmax(310px, 1.1fr); gap: 24px; align-items: start; }
+.management-grid input:not([type='checkbox']) { width: 100%; border: 1px solid #dce3d6; background: #fbfcf9; color: #415646; padding: 12px 13px; border-radius: 7px; font-size: 12px; }
+.management-grid input:not([type='checkbox']):focus, .detail-card input:focus { outline: 2px solid #85b69d; outline-offset: 2px; }
+.management-grid form { margin-top: 12px; }
+.field-help { font-size: 11px; color: #89977e; line-height: 1.9; margin: 9px 0 15px; overflow-wrap: anywhere; }
+.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.check-label { display: flex; align-items: flex-start; gap: 9px; line-height: 1.8; font-size: 12px; margin: 18px 0; }
+.check-label input { accent-color: #245b4c; margin-top: 4px; }
+.form-actions { display: flex; align-items: center; gap: 10px; margin-top: 24px; }
+.form-actions .primary-button { flex: 1; }
+.inline-link { color: #3f8062; font-size: 12px; text-decoration: underline; text-underline-offset: 4px; }
+.resource-card { border: 1px solid #e3e8dc; border-radius: 9px; margin-top: 20px; padding: 19px; }
+.resource-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.resource-heading strong { font-size: 14px; font-weight: 550; }
+.resource-card p { font-size: 12px; line-height: 1.8; color: #76876c; overflow-wrap: anywhere; }
+.resource-card .field-help { font-size: 11px; color: #98a18d; }
+.version-tag { color: #7d936a; font-family: Consolas, monospace; font-size: 11px; background: #f0f5e9; padding: 4px 8px; border-radius: 4px; }
+.tag-row { display: flex; gap: 7px; flex-wrap: wrap; }
+.tag-row span { border: 1px solid #e2e8d8; padding: 4px 7px; font-size: 10px; color: #8a987a; border-radius: 4px; }
+.template-preview { font-family: inherit; background: #f8faf4; border: 1px solid #e7ecdf; border-radius: 6px; font-size: 11px; color: #7a8a6c; line-height: 1.9; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 210px; overflow: auto; }
+.button-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 17px; }
+.danger-link { background: transparent; color: #a26b50; border: 0; padding: 8px; font-size: 11px; }
+.inline-warning { background: #fff6e6; border: 1px solid #ebdec5; border-radius: 7px; padding: 13px; font-size: 11px; line-height: 1.9; color: #927444; margin: 16px 0; }
+.inline-warning p { color: inherit; font-size: inherit; margin-top: 0; }
+.friend-item { font-size: 11px; padding: 9px 0; color: #7b8c70; }
+.friend-item code, .receipt-item code { display: block; overflow-wrap: anywhere; font-size: 10px; margin-top: 5px; color: #9ba78e; }
+summary { cursor: pointer; font-size: 11px; color: #789568; margin-top: 15px; line-height: 1.8; }
+.rule-summary { margin-top: 15px; padding: 13px; background: #eef5e7; border-radius: 7px; }
+.rule-summary strong { font-size: 12px; color: #557745; }
+.rule-summary p { font-size: 10px; color: #899b77; line-height: 1.9; margin: 5px 0 0; }
+.task-management .primary-button { margin-top: 20px; }
+.workflow-task-list { margin-top: 22px; max-height: 660px; overflow: auto; }
+.task-id { overflow-wrap: anywhere; }
+.task-row-top { gap: 9px; }
+.step-list { display: flex; flex-wrap: wrap; gap: 20px; padding: 22px 0; border-bottom: 1px solid #e6ecdf; }
+.step-item { display: flex; align-items: center; gap: 10px; }
+.step-item > span { display: grid; place-items: center; width: 28px; height: 28px; background: #eef1e7; color: #a0ad93; border-radius: 50%; font-size: 11px; }
+.step-item.done > span { background: #dfeedd; color: #568747; }
+.step-item.unknown > span, .step-item.failed > span { background: #fbebd2; color: #a67d3b; }
+.step-item strong { display: block; font-size: 12px; color: #73876a; font-weight: 500; }
+.step-item small { display: block; font-size: 9px; color: #a3ad97; margin-top: 5px; }
+.snapshot-list { display: grid; grid-template-columns: 82px 1fr; gap: 12px; font-size: 11px; line-height: 1.8; margin: 0 0 24px; }
+.snapshot-list dt { color: #9ca88f; }
+.snapshot-list dd { margin: 0; color: #74876a; overflow-wrap: anywhere; }
+.detail-grid h3:not(:first-child) { margin-top: 26px; }
+.detail-card input { width: 100%; padding: 11px; border: 1px solid #dce3d6; border-radius: 6px; color: #617557; background: #fcfdf9; }
+.task-action-panel { display: grid; gap: 10px; }
+.task-action-panel .secondary-button { text-align: left; line-height: 1.7; }
+.task-action-panel .primary-button { font-size: 12px; line-height: 1.8; }
+.inline-editor { background: #f5f8ef; padding: 18px; border-radius: 7px; margin: 20px 0; }
+.inline-editor .primary-button { margin-top: 15px; font-size: 12px; }
+.receipt-details { margin-top: 22px; }
+.receipt-item { padding: 12px 0; border-bottom: 1px solid #e8ecdf; font-size: 11px; line-height: 1.8; color: #8a9c79; }
+.receipt-item p { margin: 5px 0; font-size: 10px; }
+@media(max-width: 1100px) { .management-grid { grid-template-columns: 1fr; } .resource-card { margin-top: 16px; } }
+@media(max-width: 600px) { .mobile-nav { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 25px; } .mobile-nav button { flex: 1; min-width: 83px; background: #fff; border: 1px solid #dde6d7; color: #7f9273; border-radius: 6px; padding: 9px 6px; font-size: 10px; white-space: nowrap; } .mobile-nav button.current { background: #245b4c; color: #f0f7e8; border-color: #245b4c; } .field-grid { grid-template-columns: 1fr; gap: 0; } .task-meta { flex-direction: column; gap: 3px; } .step-list { gap: 16px; } .snapshot-list { grid-template-columns: 68px 1fr; gap: 9px; } .form-actions { flex-direction: column; align-items: stretch; } }

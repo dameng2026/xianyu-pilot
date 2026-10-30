@@ -1,0 +1,11 @@
+# Reviewed public protocol app keys, not account/session credentials.
+e18da0b990210a2c05a8bac915e4eeaf7daf0bd0:apps/api/app/services/ws_protocol.py:generic-api-key:1029
+e18da0b990210a2c05a8bac915e4eeaf7daf0bd0:apps/api/app/services/ws_token.py:generic-api-key:188
+# Constant sessionStorage key for a publish intent, not an API credential.
+e18da0b990210a2c05a8bac915e4eeaf7daf0bd0:apps/web/src/pages/ProductPublishPage.vue:generic-api-key:334
+# Historical bridge credential, removed from current source in fd2d664.
+# Owner confirmed server-side revocation/rotation on 2026-10-28 (Asia/Shanghai).
+# These exact historical findings are resolved; new commits/locations still scan.
+c6b55fd2603e1e0c70cbf0a9329599b0c2642cbb:apps/api/app/core/config.py:generic-api-key:466
+f02059ad7e52d0aa5659056c826ba894baae76f3:.trae/rules/opensource-commercial-bridge-sync.md:generic-api-key:52
+f02059ad7e52d0aa5659056c826ba894baae76f3:apps/api/app/core/config.py:generic-api-key:466

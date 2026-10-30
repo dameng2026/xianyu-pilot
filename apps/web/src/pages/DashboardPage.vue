@@ -2,48 +2,6 @@
   <div class="dashboard-page">
     <div class="dashboard-grid">
       <div class="dashboard-main">
-        <section v-if="totalSlides > 0" class="hero-card">
-          <div class="hero-viewport">
-            <div class="hero-track" :style="{ transform: `translateX(-${currentSlide * 100}%)` }">
-              <article
-                v-for="(slide, index) in carouselSlides"
-                :key="slide.coverId || slide.id || index"
-                :class="['hero-slide', { clickable: !!slide.linkUrl }]"
-                @click="clickCarousel(slide)"
-              >
-                <img
-                  class="hero-banner"
-                  :src="slide.imageUrl"
-                  :alt="slide.title || `轮播图 ${index + 1}`"
-                  decoding="async"
-                  :fetchpriority="index === 0 ? 'high' : 'low'"
-                  loading="eager"
-                />
-              </article>
-            </div>
-          </div>
-
-          <button class="hero-arrow hero-arrow-left" type="button" :disabled="totalSlides <= 1" @click="prevSlide">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round">
-              <polyline points="15 18 9 12 15 6" />
-            </svg>
-          </button>
-          <button class="hero-arrow hero-arrow-right" type="button" :disabled="totalSlides <= 1" @click="nextSlide">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round">
-              <polyline points="9 18 15 12 9 6" />
-            </svg>
-          </button>
-
-          <div class="hero-dots">
-            <button
-              v-for="(_, index) in totalSlides"
-              :key="`dot-${index}`"
-              type="button"
-              :class="['hero-dot', { active: currentSlide === index }]"
-              @click="goToSlide(index)"
-            ></button>
-          </div>
-        </section>
 
         <OnboardingChecklist @navigate="onOnboardingNavigate" />
 
@@ -98,51 +56,6 @@
       </div>
 
       <aside class="dashboard-side">
-        <CardPanel class="side-panel ad-side-panel">
-          <template #title>广告合作</template>
-          <template #action>
-            <button
-              class="side-link"
-              type="button"
-              :disabled="adsAvailable !== true"
-              :title="adsAvailable === false ? adsUnavailableMessage : ''"
-              @click="emit('navigate', 'ad-application')"
-            >
-              申请投放 ›
-            </button>
-          </template>
-          <div v-if="adsAvailable === false" class="side-empty" role="status">
-            <strong>广告商业服务不可用</strong>
-            <span>{{ adsUnavailableMessage }}</span>
-          </div>
-          <div v-else-if="adsAvailable === null" class="side-empty" role="status">
-            <strong>正在确认广告服务</strong>
-            <span>确认真实商业服务可用前，不展示广告或投放入口。</span>
-          </div>
-          <div v-else class="ad-side-copy">
-            <strong>广告内容由商业服务实时提供</strong>
-            <span>套餐、价格、审核、排期与展示状态均以商业服务返回的数据为准。</span>
-          </div>
-          <div v-if="activeTextAds.length" class="ad-text-list">
-            <button
-              v-for="item in activeTextAds"
-              :key="item.id || item.title"
-              type="button"
-              class="ad-text-item"
-              @click="openTextAd(item)"
-            >
-              <div class="ad-text-head">
-                <strong>{{ item.title }}</strong>
-                <i v-if="item.badge">{{ item.badge }}</i>
-              </div>
-              <p v-if="item.summary">{{ item.summary }}</p>
-            </button>
-          </div>
-          <div v-else-if="adsAvailable === true" class="side-empty">
-            <strong>暂无可展示广告</strong>
-            <span>商业服务当前没有返回可展示的文字广告。</span>
-          </div>
-        </CardPanel>
 
         <CardPanel class="side-panel">
           <template #title>使用指南</template>
@@ -240,15 +153,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import CardPanel from '../components/CardPanel.vue'
 import Icon from '../components/Icon.vue'
 import OnboardingChecklist from '../components/OnboardingChecklist.vue'
-import { getCarouselList } from '../api/carousel'
-import { getTextAds } from '../api/ads.js'
-import {
-  buildOptionalAdUnavailableMessage,
-  resolveOptionalAdSnapshot
-} from './dashboard/optional-ad-snapshot.js'
 import { shortText, timeText } from '../utils/format.js'
 import { getNavigationNotifications, getNavigationOverview, getNavigationSystemStatus } from '../api/navigation.js'
-import { openExternalUrl } from '../utils/externalUrl.js'
 
 const emit = defineEmits(['navigate'])
 
@@ -256,8 +162,6 @@ function onOnboardingNavigate(routeKey) {
   emit('navigate', routeKey)
 }
 
-const carousels = ref([])
-const currentSlide = ref(0)
 const error = ref('')
 const reloading = ref(false)
 async function reloadData() {
@@ -273,12 +177,8 @@ async function reloadData() {
 const notifications = ref([])
 const notificationsAvailable = ref(null)
 const realtimeEvents = ref([])
-const textAds = ref([])
-const adsAvailable = ref(null)
-const adsUnavailableMessage = ref('当前不展示占位广告，配置并接通真实商业桥后才能申请投放。')
 const lastLoaded = ref('-')
 const collapsed = reactive({})
-let autoTimer = null
 const defaultOverview = {
   accountCount: 0,
   goodsCount: 0,
@@ -296,54 +196,6 @@ const fallbackSystemStatus = [
 ]
 
 const systemStatus = ref(fallbackSystemStatus.map(item => ({ ...item })))
-
-const displaySlides = computed(() => {
-  return carousels.value
-    .filter(item => item?.enabled !== false)
-    .sort((a, b) => (a?.sortOrder ?? 0) - (b?.sortOrder ?? 0))
-    .flatMap(item => {
-      const coverItems = Array.isArray(item.coverItems) && item.coverItems.length
-        ? item.coverItems
-        : [{
-            id: `${item.id || 'legacy'}-0`,
-            imageUrl: item.imageUrl || '',
-            linkUrl: item.linkUrl || '',
-            title: item.title || '',
-            description: item.description || '',
-            enabled: item.enabled !== false,
-            sortOrder: 0
-          }]
-      return coverItems
-        .filter(cover => cover?.enabled !== false && cover?.imageUrl)
-        .sort((a, b) => (a?.sortOrder ?? 0) - (b?.sortOrder ?? 0))
-        .map((cover, index) => ({
-          ...item,
-          ...cover,
-          coverId: cover.id || `${item.id || 'carousel'}-${index}`,
-          title: cover.title || item.title || '',
-          description: cover.description || item.description || '',
-          imageUrl: cover.imageUrl || item.imageUrl || '',
-          linkUrl: cover.linkUrl || item.linkUrl || ''
-        }))
-    })
-})
-
-const carouselSlides = computed(() => {
-  return displaySlides.value
-    .map(slide => ({
-      ...slide,
-      imageUrl: resolveCarouselImage(slide?.imageUrl)
-    }))
-    .filter(slide => slide.imageUrl)
-})
-
-const totalSlides = computed(() => carouselSlides.value.length)
-const activeTextAds = computed(() => {
-  return textAds.value
-    .filter(item => item?.enabled !== false && String(item?.title || '').trim())
-    .sort((a, b) => (a?.sortOrder ?? 0) - (b?.sortOrder ?? 0))
-    .slice(0, 10)
-})
 
 const abnormalStatusCount = computed(() => systemStatus.value.filter(item => item.ok === false).length)
 const unknownStatusCount = computed(() => systemStatus.value.filter(item => item.ok == null).length)
@@ -497,39 +349,6 @@ const guideCollapsibles = computed(() => {
   ]
 })
 
-function resolveCarouselImage(imageUrl) {
-  const value = String(imageUrl || '').trim()
-  if (!value) return ''
-  if (/^(https?:)?\/\//.test(value) || value.startsWith('/')) return value
-  return `/${value.replace(/^\/+/, '')}`
-}
-
-function nextSlide() {
-  if (totalSlides.value <= 1) return
-  currentSlide.value = (currentSlide.value + 1) % totalSlides.value
-  restartAuto()
-}
-
-function prevSlide() {
-  if (totalSlides.value <= 1) return
-  currentSlide.value = (currentSlide.value - 1 + totalSlides.value) % totalSlides.value
-  restartAuto()
-}
-
-function goToSlide(index) {
-  if (index < 0 || index >= totalSlides.value) return
-  currentSlide.value = index
-  restartAuto()
-}
-
-function restartAuto() {
-  if (autoTimer) clearInterval(autoTimer)
-  if (totalSlides.value <= 1) return
-  autoTimer = setInterval(() => {
-    currentSlide.value = (currentSlide.value + 1) % totalSlides.value
-  }, 5000)
-}
-
 function toArray(data) {
   if (Array.isArray(data)) return data
   if (Array.isArray(data?.records)) return data.records
@@ -660,16 +479,11 @@ function ensureRealtimeSeedEvents() {
 async function loadData() {
   error.value = ''
   const failures = []
-  const [carouselRes, overviewRes, notificationsRes, systemStatusRes, textAdsRes] = await Promise.allSettled([
-    getCarouselList(),
+  const [overviewRes, notificationsRes, systemStatusRes] = await Promise.allSettled([
     getNavigationOverview(),
     getNavigationNotifications({ limit: 5 }),
-    getNavigationSystemStatus(),
-    getTextAds()
+    getNavigationSystemStatus()
   ])
-
-  const carouselSnapshot = resolveOptionalAdSnapshot(carousels.value, carouselRes)
-  carousels.value = carouselSnapshot.items
 
   if (overviewRes.status === 'fulfilled' && overviewRes.value?.data) {
     overviewAvailable.value = true
@@ -702,49 +516,11 @@ async function loadData() {
     failures.push('system-status')
   }
 
-  const textAdsSnapshot = resolveOptionalAdSnapshot(textAds.value, textAdsRes)
-  textAds.value = textAdsSnapshot.items
-  if (textAdsSnapshot.refreshed) {
-    adsAvailable.value = true
-    adsUnavailableMessage.value = ''
-  } else {
-    adsAvailable.value = false
-    const status = Number(textAdsRes.reason?.status || textAdsRes.reason?.code || 0)
-    adsUnavailableMessage.value = buildOptionalAdUnavailableMessage(status, {
-      hasSnapshot: textAds.value.length > 0
-    })
-  }
-
   if (failures.length > 0) {
     error.value = '部分导航数据加载失败'
   }
   ensureRealtimeSeedEvents()
   lastLoaded.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-  if (currentSlide.value >= totalSlides.value) currentSlide.value = 0
-  restartAuto()
-}
-
-function clickCarousel(item) {
-  if (item?.linkUrl) {
-    if (!openExternalUrl(item.linkUrl)) error.value = '广告链接无效或使用了不安全的协议'
-  }
-}
-
-function openTextAd(item) {
-  const link = String(item?.linkUrl || '').trim()
-  if (!link) {
-    emit('navigate', 'ad-application')
-    return
-  }
-  if (link.startsWith('#/')) {
-    emit('navigate', link.replace('#/', ''))
-    return
-  }
-  if (link.startsWith('/#/')) {
-    emit('navigate', link.replace('/#/', ''))
-    return
-  }
-  if (!openExternalUrl(link)) error.value = '广告链接无效或使用了不安全的协议'
 }
 
 function onSse(event) {
@@ -806,7 +582,6 @@ const features = [
   { t: '商品同步', d: '按需同步商品；发布与改价结果以平台确认为准', i: 'product', c: 'green-bg', to: 'products', targetLabel: '商品管理' },
   { t: '订单管理', d: '按需同步订单并查看后端实际记录状态', i: 'order', c: 'blue-bg', to: 'orders', targetLabel: '订单管理' },
   { t: '自动发货', d: '按已配置规则处理发货，异常与未知结果需人工复核', i: 'truck', c: 'orange-bg', to: 'auto-delivery', targetLabel: '自动化' },
-  { t: '广告合作', d: '查看商业服务返回的真实套餐；未配置时页面会明确禁用提交与支付。', i: 'opportunity', c: 'purple-bg', to: 'ad-application', targetLabel: '广告申请' },
   { t: '系统设置', d: '集中管理通用模型、向量模型、RAG 知识库配置。', i: 'settings', c: 'cyan-bg', to: 'settings-system', targetLabel: '系统配置' },
   { t: '数据统计', d: '查看订单、发货与自动回复的实际汇总', i: 'data', c: 'blue-bg', to: 'data', targetLabel: '数据面板' }
 ]
@@ -822,7 +597,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('xya-sse-event', onSse)
-  if (autoTimer) clearInterval(autoTimer)
 })
 </script>
 
@@ -857,105 +631,19 @@ onBeforeUnmount(() => {
   box-shadow: 0 16px 40px rgba(32, 68, 132, 0.05);
 }
 
-.hero-card {
-  position: relative;
-  overflow: hidden;
-  border-radius: 22px;
-  border: 1px solid rgba(190, 211, 247, 0.9);
-  background: linear-gradient(180deg, #eff6ff 0%, #f7fbff 100%);
-  box-shadow: 0 18px 48px rgba(41, 88, 171, 0.1);
-  padding: 14px;
-}
 
-.hero-card::before {
-  display: none;
-}
 
-.hero-viewport {
-  position: relative;
-  overflow: hidden;
-  border-radius: 18px;
-  aspect-ratio: 2048 / 646;
-}
 
-.hero-track {
-  display: flex;
-  height: 100%;
-  transition: transform 0.55s cubic-bezier(0.22, 0.61, 0.36, 1);
-}
 
-.hero-slide {
-  min-width: 100%;
-  position: relative;
-  margin: 0;
-  cursor: default;
-}
 
-.hero-slide.clickable {
-  cursor: pointer;
-}
 
-.hero-banner {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-  object-position: center;
-}
 
-.hero-arrow {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.96);
-  color: #33435d;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 12px 28px rgba(61, 95, 152, 0.14);
-  z-index: 4;
-}
 
-.hero-arrow:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
-.hero-arrow-left {
-  left: 28px;
-}
 
-.hero-arrow-right {
-  right: 28px;
-}
 
-.hero-dots {
-  position: absolute;
-  bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 8px;
-  z-index: 4;
-}
 
-.hero-dot {
-  width: 8px;
-  height: 8px;
-  border: 0;
-  border-radius: 999px;
-  padding: 0;
-  background: rgba(112, 143, 197, 0.32);
-}
 
-.hero-dot.active {
-  width: 24px;
-  background: #1c73ff;
-}
 
 .quick-start-grid {
   display: grid;
@@ -1103,83 +791,16 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
-.ad-side-panel {
-  background:
-    radial-gradient(circle at top right, rgba(112, 174, 255, 0.16), transparent 34%),
-    linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-}
 
-.ad-side-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 14px;
-}
 
-.ad-side-copy strong {
-  color: #15243f;
-  font-size: 15px;
-}
 
-.ad-side-copy span {
-  color: #667892;
-  font-size: 13px;
-  line-height: 1.7;
-}
 
-.ad-text-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 
-.ad-text-item {
-  width: 100%;
-  padding: 14px 14px 15px;
-  border: 1px solid #dce8f8;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.94);
-  text-align: left;
-  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
-}
 
-.ad-text-item:hover {
-  transform: translateY(-1px);
-  border-color: #9dc0ff;
-  box-shadow: 0 14px 28px rgba(39, 94, 180, 0.1);
-}
 
-.ad-text-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
 
-.ad-text-head strong {
-  color: #173052;
-  font-size: 13px;
-}
 
-.ad-text-head i {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: #edf5ff;
-  color: #2f74f6;
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 800;
-}
 
-.ad-text-item p {
-  margin: 8px 0 0;
-  color: #63758f;
-  font-size: 12px;
-  line-height: 1.7;
-}
 
 .guide-section h4 {
   margin: 0;
@@ -1510,38 +1131,13 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
-  .hero-viewport {
-    aspect-ratio: 16 / 5;
-  }
 
-  /* Hero 卡片内边距 + 圆角收敛 */
-  .hero-card {
-    padding: 8px;
-    border-radius: 14px;
-  }
 
-  .hero-viewport {
-    border-radius: 12px;
-  }
 
-  /* Hero 翻页箭头缩小并贴近边缘 */
-  .hero-arrow {
-    width: 36px;
-    height: 36px;
-  }
 
-  .hero-arrow-left {
-    left: 12px;
-  }
 
-  .hero-arrow-right {
-    right: 12px;
-  }
 
-  .hero-dots {
-    bottom: 12px;
-    gap: 6px;
-  }
+
 
   /* 仪表盘网格间距收敛 */
   .dashboard-grid {
@@ -1641,35 +1237,11 @@ onBeforeUnmount(() => {
     padding: 14px 12px;
   }
 
-  /* 广告位条目收敛 */
-  .ad-side-copy {
-    gap: 6px;
-    margin-bottom: 10px;
-  }
 
-  .ad-side-copy strong {
-    font-size: 14px;
-  }
 
-  .ad-side-copy span {
-    font-size: 12px;
-    line-height: 1.65;
-  }
 
-  .ad-text-item {
-    padding: 10px;
-    border-radius: 12px;
-  }
 
-  .ad-text-head strong {
-    font-size: 12px;
-  }
 
-  .ad-text-item p {
-    margin-top: 6px;
-    font-size: 11px;
-    line-height: 1.6;
-  }
 
   /* 指南区收敛 */
   .guide-section h4 {

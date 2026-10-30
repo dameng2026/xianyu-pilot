@@ -1,0 +1,23 @@
+[
+  {
+    "ruleId": "py/weak-sensitive-data-hashing",
+    "path": "apps/api/app/services/ws_token.py",
+    "function": "_make_sign",
+    "sha256": "086bb772b8ae6464ecbce894a61026b6c2fad66f804dc4d3ba001869c9c93bdf",
+    "reason": "Mtop upstream protocol requires MD5(token&timestamp&appKey&data). This is an external protocol signature, not local password storage. Changing the algorithm breaks the upstream API. Requests use HTTPS; this exception covers only this exact function body."
+  },
+  {
+    "ruleId": "py/weak-sensitive-data-hashing",
+    "path": "apps/api/app/services/xianyu_api_service.py",
+    "function": "_make_sign",
+    "sha256": "76f588bbad9dd9f057cfb33008bf864ffe67aaf4a62072dcb0171afa8373f343",
+    "reason": "Mtop upstream protocol requires MD5(token&timestamp&appKey&data). This is an external protocol signature, not local password storage. Changing the algorithm breaks the upstream API. Requests use HTTPS; this exception covers only this exact function body."
+  },
+  {
+    "ruleId": "py/weak-sensitive-data-hashing",
+    "path": "apps/api/app/services/xianyu_goods_sync.py",
+    "function": "_build_sign",
+    "sha256": "129de47c2c7a4f9b3618dbf0a6aea4b12d8b7d9d80977d05faff6b37647dd453",
+    "reason": "Mtop upstream protocol requires MD5(token&timestamp&appKey&data). This is an external protocol signature, not local password storage. Changing the algorithm breaks the upstream API. Requests use HTTPS; this exception covers only this exact function body."
+  }
+]

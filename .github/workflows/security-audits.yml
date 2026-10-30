@@ -1,0 +1,171 @@
+name: Reusable security audits
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '22.23.1'
+  NPM_VERSION: '10.9.8'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  npm-audit:
+    name: npm dependency audit (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [web, crawler]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-audit --no-fund
+      - run: mkdir -p reports
+      - name: Reject high and critical advisories and audit errors
+        working-directory: apps/${{ matrix.component }}
+        run: npm audit --package-lock-only --audit-level=high --fetch-timeout=30000 --fetch-retries=3 --json > "$GITHUB_WORKSPACE/reports/npm-audit-${{ matrix.component }}.json"
+      - name: Preserve npm audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-${{ matrix.component }}
+          overwrite: true
+          path: reports/npm-audit-*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  python-audit:
+    name: Python dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+      - run: python -m pip install -r requirements-ci.txt
+      - name: Audit the hashed runtime lockfile
+        run: |
+          mkdir -p reports
+          python -m pip_audit -r apps/api/requirements.txt --require-hashes --strict --progress-spinner off --format json --output reports/pip-audit.json
+      - name: Preserve Python audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dependency-audit
+          overwrite: true
+          path: reports/pip-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summarize dependency vulnerabilities and available fixes
+        if: always()
+        run: python scripts/ci/gates.py pip-audit reports/pip-audit.json
+
+  code-audit:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: github/codeql-action/init@793b778da9c9275a0f276522b27cb5fc14bba279 # v4.39.1, same version as reference project
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+      - uses: github/codeql-action/analyze@793b778da9c9275a0f276522b27cb5fc14bba279 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+          output: reports/codeql
+          upload: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      - name: Reject high-risk findings and incomplete analysis
+        run: python scripts/ci/gates.py sarif reports/codeql --reviews .github/codeql-reviewed.json
+      - name: Preserve CodeQL evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-${{ matrix.language }}
+          overwrite: true
+          path: reports/codeql/
+          if-no-files-found: warn
+          retention-days: 14
+
+  secrets-audit:
+    name: Secret scan (full Git history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install checksum-verified Gitleaks
+        run: python scripts/ci/install_tool.py gitleaks "$RUNNER_TEMP/ci-tools"
+      - name: Scan without exposing matched credentials
+        run: |
+          mkdir -p reports
+          "$RUNNER_TEMP/ci-tools/gitleaks" git . --log-opts="--all" --redact=100 --no-banner --exit-code 1 --report-format json --report-path reports/gitleaks.json
+      - name: Preserve redacted secret scan evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secret-audit-report
+          overwrite: true
+          path: reports/gitleaks.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summarize fingerprints requiring review or credential rotation
+        if: always()
+        run: python scripts/ci/gates.py secrets reports/gitleaks.json
+
+  audit-gate:
+    name: Security audit gate
+    if: always()
+    needs: [npm-audit, python-audit, code-audit, secrets-audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Require every matrix variant to succeed
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python scripts/ci/gates.py jobs npm-audit python-audit code-audit secrets-audit

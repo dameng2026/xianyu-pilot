@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -43,6 +44,7 @@ from sqlalchemy import text
 
 from ..core.cookie_crypto import decrypt_cookie_if_needed, encrypt_cookie_for_storage
 from ..core.database import async_session
+from ..core.upload_security import request_public_https
 from .captcha_solver import _merge_cookies
 from .remote_slider_config import (
     is_remote_slider_enabled,
@@ -59,6 +61,19 @@ logger = logging.getLogger(__name__)
 # - write=10s：请求体较小
 # - pool=5s：连接池获取超时
 REMOTE_SOLVE_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0)
+
+
+async def _request_remote_slider(api_url: str, api_key: str, body: dict) -> tuple[int, dict]:
+    # Revalidate and pin DNS for each solve, including retries and cache hits.
+    response = await request_public_https(
+        api_url, method="POST", content=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Api-Key": api_key},
+        timeout=REMOTE_SOLVE_TIMEOUT,
+    )
+    data = response.json()
+    if not isinstance(data, dict):
+        raise ValueError("Remote slider returned an invalid object")
+    return response.status_code, data
 
 # 约束2：service_unavailable 自动重试配置
 MAX_SERVICE_UNAVAILABLE_RETRIES = 2
@@ -452,22 +467,8 @@ async def try_remote_solve(
         }
 
         try:
-            async with httpx.AsyncClient(
-                timeout=REMOTE_SOLVE_TIMEOUT,  # 约束3：分离超时
-                follow_redirects=False,
-                trust_env=False,
-            ) as client:
-                resp = await client.post(
-                    api_url,
-                    json=request_body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-Api-Key": api_key,
-                    },
-                )
-                last_resp_status_code = resp.status_code
-                last_data = resp.json()
-                last_network_error = False
+            last_resp_status_code, last_data = await _request_remote_slider(api_url, api_key, request_body)
+            last_network_error = False
         except Exception as exc:
             # 网络异常：记录并准备重试
             last_network_error = True

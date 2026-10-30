@@ -26,9 +26,6 @@ _PUBLIC_API_PATHS = {
     "/api/auth/login",
     "/api/feishu/webhook",
     "/api/sse/subscribe",
-    # 广告投放相关接口需要登录后访问，不再公共开放
-    "/api/ads/applications",
-    "/api/ads/payment/methods",
 }
 
 # Removed self-service authentication endpoints stay public only so old clients
@@ -141,24 +138,12 @@ def _request_id(request: Request) -> str:
     return uuid.uuid4().hex
 
 
-# Path prefixes that are public without login. Used for parameterized routes
-# (e.g. /ads/applications/{id}/payment-order) where exact matching will not work.
-# Ad application and payment endpoints use the persistent instance token sent
-# in the commercial bridge headers for identity correlation, not local login.
-_PUBLIC_API_PREFIXES = (
-    "/api/ads/applications/",
-    "/api/ads/payment/orders/",
-)
-
-
 def _requires_authentication(path: str, method: str) -> bool:
     if method == "OPTIONS":
         return False
     if not (path.startswith("/api/") or path == "/api" or path.startswith("/ai/")):
         return False
     if path in _PUBLIC_API_PATHS or path in _PUBLIC_RETIRED_AUTH_PATHS:
-        return False
-    if any(path.startswith(prefix) for prefix in _PUBLIC_API_PREFIXES):
         return False
     # Every internal route performs its own constant-time X-Internal-Token
     # validation. It intentionally does not accept ordinary public traffic.

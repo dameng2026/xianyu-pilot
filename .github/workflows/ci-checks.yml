@@ -1,0 +1,255 @@
+name: Reusable build and regression checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '22.23.1'
+  NPM_VERSION: '10.9.8'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  workflow-checks:
+    name: Workflow validation and gate regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Validate workflow syntax and expressions
+        run: |
+          python scripts/ci/install_tool.py actionlint "$RUNNER_TEMP/ci-tools"
+          "$RUNNER_TEMP/ci-tools/actionlint" -color
+      - name: Test evidence gates and native publication rules
+        run: python -m unittest discover -s tests/ci -v
+
+  backend-tests:
+    name: Backend regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      APP_ENV: test
+      PYTHONPATH: apps/api
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements.txt
+            requirements-ci.txt
+      - name: Install locked application and CI dependencies
+        run: |
+          python -m pip install --require-hashes -r apps/api/requirements.txt
+          python -m pip install -r requirements-ci.txt
+          python -m pip check
+      - name: Check Python syntax and run existing regressions
+        run: |
+          mkdir -p reports
+          python -m compileall -q apps/api/app apps/desktop scripts/ci
+          python -m pytest apps/api/tests -q --junitxml=reports/pytest.xml
+      - name: Preserve backend test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-tests-${{ matrix.os }}
+          overwrite: true
+          path: reports/pytest.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  frontend-build:
+    name: Build and regressions (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [web, crawler]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.component }}/package-lock.json
+      - name: Align npm with the package contract
+        run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-audit --no-fund
+      - name: Install from lockfile
+        working-directory: apps/${{ matrix.component }}
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run existing frontend regressions
+        if: matrix.component == 'web'
+        working-directory: apps/web
+        run: node --test test/*.test.js
+      - name: Build component
+        working-directory: apps/${{ matrix.component }}
+        run: npm run build
+      - name: Record tested source and compiled file checksums
+        run: python scripts/ci/artifacts.py record --component ${{ matrix.component }} --directory apps/${{ matrix.component }}/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.component }}-dist
+          overwrite: true
+          path: apps/${{ matrix.component }}/dist/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-portable:
+    name: Windows x64 portable EXE and relocation checks
+    needs: [workflow-checks, backend-tests, frontend-build]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RUNTIME_MODE: desktop
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements.txt
+            packaging/windows/requirements-build.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+      - name: Verify the previously tested frontend
+        run: python scripts/ci/artifacts.py verify --component web --directory apps/web/dist
+      - name: Download runtime and packaging dependencies on GitHub only
+        run: |
+          python -m pip install --require-hashes -r apps/api/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Application dependency install failed' }
+          python -m pip install --only-binary=:all: -r packaging/windows/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { throw 'GUI dependency install failed' }
+          python -m pip install -r requirements-ci.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Test dependency install failed' }
+          python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'Build dependency validation failed' }
+      - name: Check Qt tray and window contracts without a physical desktop
+        env:
+          APP_ENV: test
+          PYTHONPATH: apps/api
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          New-Item -ItemType Directory -Force -Path .tmp, reports | Out-Null
+          python -m pytest apps/api/tests/test_portable_qt.py -q --basetemp=.tmp/qt-contract --junitxml=reports/windows-qt-contract.xml
+      - name: Build directory-style EXE with embedded Python and Chromium
+        run: ./scripts/build-windows-portable.ps1 -SkipWebBuild
+      - name: Record runtime inventory and source identity
+        run: |
+          python scripts/ci/windows_portable.py record --directory dist/windows/XianyuPilot
+          New-Item -ItemType Directory -Force -Path reports | Out-Null
+          python -m pip freeze | Set-Content -Encoding utf8 reports/windows-build-dependencies.txt
+      - name: Verify frozen startup, relocated data and embedded Vue
+        run: python scripts/ci/windows_portable_smoke.py --directory dist/windows/XianyuPilot
+      - name: Package and reverify every ZIP file checksum
+        run: python scripts/ci/windows_portable.py package --directory dist/windows/XianyuPilot --output release/windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-pilot-windows-portable
+          path: release/windows/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-portable-validation
+          path: |
+            reports/windows-portable-smoke.json
+            reports/windows-build-dependencies.txt
+            reports/windows-qt-contract.xml
+            build/windows/**/warn-*.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+  native-package:
+    name: Verify and package native source distribution
+    needs: [workflow-checks, backend-tests, frontend-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download tested Web and Crawler artifacts from this run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-dist'
+          merge-multiple: false
+          path: .tmp/compiled
+      - name: Verify compiled files and assemble the original native system
+        run: >-
+          python scripts/ci/native_package.py create --directory release
+          --web-dist .tmp/compiled/web-dist --crawler-dist .tmp/compiled/crawler-dist
+      - name: Validate ZIP contents and SHA256 checksums
+        run: python scripts/ci/native_package.py verify --directory release
+      - name: Upload native source distribution
+        id: native
+        uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-pilot-native-source
+          overwrite: true
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Write native download summary
+        env:
+          ARTIFACT_URL: ${{ steps.native.outputs.artifact-url }}
+        run: python scripts/ci/native_package.py summary --directory release
+
+  build-gate:
+    name: Build and regression gate
+    if: always()
+    needs: [workflow-checks, backend-tests, frontend-build, native-package, windows-portable]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Require every matrix variant to succeed
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python scripts/ci/gates.py jobs workflow-checks backend-tests frontend-build native-package windows-portable

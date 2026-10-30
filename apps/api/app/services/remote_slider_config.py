@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.database import async_session
+from ..core.upload_security import request_public_https, UnsafeRemoteURLError
 from ..models.entities import XianyuSysSetting
 from .sensitive_config import (
     REMOTE_SLIDER_API_KEY_PURPOSE,
@@ -113,10 +114,12 @@ def _validate_api_url(url: str) -> tuple[bool, str]:
         parsed = urlparse(url)
     except Exception:
         return False, "API 链接格式无效"
-    if parsed.scheme not in ("http", "https"):
-        return False, "API 链接必须以 http:// 或 https:// 开头"
+    if parsed.scheme != "https":
+        return False, "API 链接必须以 https:// 开头"
     if not parsed.hostname:
         return False, "API 链接缺少有效的主机名"
+    if parsed.username or parsed.password or parsed.fragment:
+        return False, "API 链接不能包含用户凭据或片段"
     if not parsed.path or parsed.path == "/":
         return False, "API 链接必须包含完整路径（如 /api/v1/slider/solve）"
     return True, ""
@@ -151,19 +154,17 @@ async def precheck_remote_slider(api_url: str, api_key: str) -> dict[str, Any]:
     #    - 405：服务在线（方法不允许，但说明端点存在）
     #    - 连接超时/拒绝：服务不可达
     try:
-        async with httpx.AsyncClient(
-            timeout=10.0,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
-            resp = await client.get(
-                api_url,
-                headers={
-                    "X-Api-Key": api_key.strip(),
-                    "X-Precheck": "true",
-                },
-            )
-            status_code = resp.status_code
+        resp = await request_public_https(
+            api_url,
+            method="GET",
+            headers={"X-Api-Key": api_key.strip(), "X-Precheck": "true"},
+            timeout_seconds=10.0,
+        )
+        status_code = resp.status_code
+    except UnsafeRemoteURLError:
+        return {"ok": False, "reachable": False, "authed": False,
+                "message": "API 链接必须指向公网 HTTPS 服务，且不能重定向或返回过大的响应",
+                "statusCode": 0}
     except httpx.ConnectTimeout:
         return {"ok": False, "reachable": False, "authed": False,
                 "message": "连接超时，远程滑块求解服务不可达，请检查 API 链接是否正确",

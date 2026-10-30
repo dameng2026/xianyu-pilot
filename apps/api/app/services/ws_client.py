@@ -85,8 +85,9 @@ async def _lookup_account_name_safe(account_id: int) -> str:
 class _ThreadedWebSocketAdapter:
     """基于 websocket-client 的最小异步适配层。"""
 
-    def __init__(self, account_id: int, url: str, headers: dict[str, str]):
+    def __init__(self, account_id: int, url: str, headers: dict[str, str], *, notifications_enabled: bool = True):
         self.account_id = account_id
+        self.notifications_enabled = notifications_enabled
         self.url = url
         self.headers = headers
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -195,7 +196,7 @@ class _ThreadedWebSocketAdapter:
         if self._loop and self._recv_queue:
             asyncio.run_coroutine_threadsafe(self._recv_queue.put(None), self._loop)
         # 账号掉线通知（失败不影响主流程；仅在非主动关闭时通知，避免正常重连刷屏）
-        if self._loop and close_status_code not in (1000, 1001, None):
+        if self.notifications_enabled and self._loop and close_status_code not in (1000, 1001, None):
             try:
                 from .notify_dispatcher import notify_account_offline
                 reason = f"code={close_status_code}"
@@ -266,8 +267,10 @@ class XianyuWebSocketClient:
         m_h5_tk: str,
         unb: str,
         on_message_callback: Optional[Callable] = None,
+        notifications_enabled: bool = True,
     ):
         self.account_id = account_id
+        self.notifications_enabled = notifications_enabled
         self.cookie_str = cookie_str
         self.m_h5_tk = m_h5_tk
         self.unb = unb
@@ -844,6 +847,7 @@ class XianyuWebSocketClient:
             account_id=self.account_id,
             url=ws_url,
             headers=additional_headers,
+            notifications_enabled=self.notifications_enabled,
         )
 
         try:

@@ -345,6 +345,7 @@
 </template>
 
 <script setup>
+import { createSecureId } from '../utils/secureId.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import CardPanel from '../components/CardPanel.vue'
 import AppButton from '../components/AppButton.vue'
@@ -1452,10 +1453,7 @@ async function ensureSelectedAccountCookieValid() {
 }
 
 function createPublishIntentKey() {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `publish-${globalThis.crypto.randomUUID()}`
-  }
-  return `publish-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  return createSecureId('publish')
 }
 
 function savePublishIntent() {

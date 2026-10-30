@@ -906,66 +906,13 @@ class SqlRealtimeDeliveryStore:
 
 
 async def heal_orphaned_card_claims(db: AsyncSession) -> int:
-    """Recover orphaned card claims left by crashed or stuck delivery attempts.
+    """Compatibility hook: terminal state alone NEVER proves a card is unsent.
 
-    Cards with status=1 (claimed) linked to attempts that have reached a
-    terminal state (success/failed/unknown) are reset to status=0 (available)
-    so they can be reused. This prevents inventory leakage when the process
-    dies between claiming a card and finalizing the attempt.
-
-    Returns the number of cards healed.
+    Keep all ambiguous claims for explicit reconciliation. Safe failure release
+    remains the coordinator's evidence-based mark_message_failed operation.
     """
-    result = await db.execute(
-        text(
-            """
-            UPDATE card_item ci
-            INNER JOIN realtime_delivery_attempt rda
-              ON rda.id = ci.realtime_attempt_id
-            SET ci.status = 0,
-                ci.realtime_attempt_id = NULL,
-                ci.claim_token = NULL,
-                ci.used_time = NULL,
-                ci.updated_time = NOW()
-            WHERE ci.deleted = 0
-              AND ci.status = 1
-              AND rda.state IN ('success', 'failed', 'unknown')
-            """
-        )
-    )
-    healed = result.rowcount or 0
-    if healed > 0:
-        # Refresh statistics for affected card groups
-        await db.execute(
-            text(
-                """
-                UPDATE card_group cg
-                SET cg.total_count = (
-                        SELECT COUNT(*) FROM card_item ci
-                        WHERE ci.group_id = cg.id AND ci.deleted = 0
-                    ),
-                    cg.used_count = (
-                        SELECT COUNT(*) FROM card_item ci
-                        WHERE ci.group_id = cg.id AND ci.deleted = 0
-                          AND ci.status = 2
-                    ),
-                    cg.available_count = (
-                        SELECT COUNT(*) FROM card_item ci
-                        WHERE ci.group_id = cg.id AND ci.deleted = 0
-                          AND ci.status = 0
-                          AND ci.is_used = 0
-                          AND (ci.expire_time IS NULL OR ci.expire_time > NOW())
-                    ),
-                    cg.updated_time = NOW()
-                WHERE cg.id IN (
-                    SELECT DISTINCT ci2.group_id FROM card_item ci2
-                    WHERE ci2.deleted = 0 AND ci2.status = 1
-                )
-                """
-            )
-        )
-        logger.info("healed orphaned card claims count=%d", healed)
-    await db.commit()
-    return healed
+    del db
+    return 0
 
 
 class XianyuRealtimeDeliveryGateway:
