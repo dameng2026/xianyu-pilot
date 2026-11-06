@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 from fastapi import FastAPI, Request
@@ -43,6 +44,29 @@ from app.core.upload_security import (
 from app.migrations import assert_schema_current, get_schema_status
 
 install_log_redaction()
+
+
+def _configure_root_logging() -> None:
+    """让 app.* 的 INFO 日志真正落到 stderr。
+
+    uvicorn 只配置自己的 logger，应用侧 logger 未挂 handler 时走
+    logging.lastResort，只输出 WARNING 及以上。结果是 WS 同步、发货链路、
+    通知派发这些 INFO 级别的关键日志全部丢失，线上排查时看不到任何业务痕迹。
+    """
+    root = logging.getLogger()
+    if root.handlers:
+        if root.level > logging.INFO or root.level == logging.NOTSET:
+            root.setLevel(logging.INFO)
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root.addHandler(handler)
+    root.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
+
+
+_configure_root_logging()
 logger = logging.getLogger(__name__)
 UPLOADS_DIR = settings.uploads_path
 

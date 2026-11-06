@@ -161,6 +161,42 @@ def extract_order_id_from_url(url: str) -> Optional[str]:
     return None
 
 
+# 闲鱼把订单号散布在 IM 消息的多个承载字段里：有时在 reminderUrl 的 query，
+# 有时只在被序列化成字符串的 rawPayload / completeMsg 中。只解析 URL 会漏掉
+# 后一类，导致 delivery_record.external_order_id 为空、发货消息无法回填订单号。
+_ORDER_ID_PATTERNS = (
+    re.compile(r"orderId=(\d{8,25})"),
+    re.compile(r"orderId%3D(\d{8,25})"),
+    re.compile(r"order_detail\?id=(\d{8,25})"),
+    re.compile(r'"orderId"\s*:\s*"?(\d{8,25})'),
+)
+
+
+def extract_order_id_from_payload(msg: dict) -> Optional[str]:
+    """从 IM 消息体内的嵌套字段提取订单号，作为 URL 解析的兜底。"""
+
+    if not isinstance(msg, dict):
+        return None
+
+    blobs: list[str] = []
+    for key in ("raw_payload", "rawPayload", "complete_msg", "completeMsg", "reminderContent", "reminder_content"):
+        value = msg.get(key)
+        if isinstance(value, str) and value:
+            blobs.append(value)
+        elif isinstance(value, (dict, list)):
+            try:
+                blobs.append(json.dumps(value, ensure_ascii=False))
+            except (TypeError, ValueError):
+                continue
+
+    for blob in blobs:
+        for pattern in _ORDER_ID_PATTERNS:
+            match = pattern.search(blob)
+            if match:
+                return match.group(1)
+    return None
+
+
 def extract_goods_id_from_url(url: str) -> Optional[str]:
     """Extract a non-empty marketplace goods identifier from a reminder URL."""
 
@@ -462,7 +498,8 @@ async def _process_delivery(
 ) -> RealtimeDeliveryOutcome | None:
     session_id = str(msg.get("sId") or msg.get("sid") or "").strip()
     reminder_url = str(msg.get("reminderUrl") or msg.get("reminder_url") or "")
-    external_order_id = extract_order_id_from_url(reminder_url)
+    # URL 解析不中时从消息体兜底，否则订单号为空会让发货记录无法回溯
+    external_order_id = extract_order_id_from_url(reminder_url) or extract_order_id_from_payload(msg)
     item_id = str(msg.get("xyGoodsId") or "").strip()
     if not item_id:
         item_id = extract_goods_id_from_url(reminder_url) or ""
