@@ -312,13 +312,21 @@ def _select_target_channels(channels: list, send_mode: str) -> list:
 
 
 def _is_event_enabled(events: list, event_display_name: str) -> bool:
-    """检查指定事件是否启用。配置中找不到时默认启用。"""
-    if not isinstance(events, list):
-        return True
+    """检查指定事件是否启用。
+
+    找不到该事件时按「关闭」处理（fail-closed）。
+
+    原实现是 fail-open：配置里删掉某个事件条目，反而会导致该事件照常推送，
+    因为遍历结束直接 return True。前端保存时若未下发完整事件列表，或运维手工
+    裁剪 config_json，都会误触发全量通知。通知是有配额的对外调用，缺省必须是
+    关闭而不是开启。
+    """
+    if not isinstance(events, list) or not events:
+        return False
     for e in events:
-        if e and e.get("event") == event_display_name:
-            return bool(e.get("enabled", True))
-    return True
+        if isinstance(e, dict) and e.get("event") == event_display_name:
+            return bool(e.get("enabled", False))
+    return False
 
 
 async def _load_notify_config(db: AsyncSession) -> Optional[dict]:
